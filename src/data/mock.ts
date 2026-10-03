@@ -1,4 +1,4 @@
-import type { Booking, Court, Incident, MergeRequest, Role } from '../types'
+import type { Booking, Court, Incident, MergeRequest, NoiseRecord, Role } from '../types'
 
 /** 演示用"当前时间"：晚间黄金时段，照明已开，多个场次并行，冲突丰富 */
 export const TODAY = '2026-09-27'
@@ -120,11 +120,12 @@ export const BOOKINGS: Booking[] = [
     captainPhone: '137****2201',
     fixedTeam: false,
     credit: 78,
+    nightLock: 1,
     status: 'ongoing',
     payStatus: 'depositPaid',
     checkInCode: '771045',
     lockerNos: [18],
-    lighting: { enabled: true, onAt: '18:25', minutes: 0, fee: 0, deposit: 50 },
+    lighting: { enabled: true, onAt: '18:25', minutes: 0, fee: 0, deposit: 75 },
     fees: [
       { kind: 'refuseMerge', label: '无正当理由拒绝拼场 · 资源占用费', amount: 20, ruleId: 'R-MERGE-1', note: '散客申请 2 人补位至 7 人，队长拒绝且未填写理由' },
       { kind: 'lighting', label: '照明费（实时累计）', amount: 0, ruleId: 'R-LIGHT-1' }
@@ -137,6 +138,7 @@ export const BOOKINGS: Booking[] = [
       { id: 'm2-5', name: '冯伟', phone: '137****2205', isCaptain: false, checkedIn: false }
     ],
     timeline: [
+      { at: '09:18', text: '预约时识别到 9/13、9/20 两次经核实噪声违规：夜间限制 L1，押金按上浮 50% 收取 75 元（R-NIGHT-1）', tone: 'warning' },
       { at: '17:40', text: '预约成功，未勾选"接受拼场"', tone: 'default' },
       { at: '17:52', text: '散客申请拼场（2 人），队长未在 10 分钟内处理且拒绝', tone: 'warning' },
       { at: '18:11', text: '系统判定无正当理由拒拼，收取资源占用费 20 元，信用 -5', tone: 'error' },
@@ -454,6 +456,80 @@ export const BOOKINGS: Booking[] = [
       { at: '15:20', text: '队长点击"结束使用并关灯"，按实际 50 分钟结算', tone: 'success' },
       { at: '15:22', text: '押金 50 元扣除照明 40 元，退回 10 元（1–3 工作日到账）', tone: 'success' }
     ]
+  },
+  {
+    id: 'B011',
+    code: '552071',
+    courtId: 'court-3',
+    halves: ['H4'],
+    scope: 'half',
+    date: TODAY,
+    start: '18:00',
+    end: '20:00',
+    headcount: 6,
+    acceptMerge: true,
+    teamName: '夜鹰队',
+    captainId: 'u-gao',
+    captainName: '高夜',
+    captainPhone: '131****5566',
+    fixedTeam: false,
+    credit: 62,
+    nightLock: 2,
+    status: 'booked',
+    payStatus: 'depositPaid',
+    checkInCode: '552071',
+    lockerNos: [9],
+    lighting: { enabled: false, minutes: 0, fee: 0, deposit: 75 },
+    fees: [],
+    members: [
+      { id: 'm11-1', name: '高夜', phone: '131****5566', isCaptain: true, checkedIn: false },
+      { id: 'm11-2', name: '袁飞', phone: '131****5567', isCaptain: false, checkedIn: false },
+      { id: 'm11-3', name: '宋岩', phone: '131****5568', isCaptain: false, checkedIn: false },
+      { id: 'm11-4', name: '韩冰', phone: '131****5569', isCaptain: false, checkedIn: false },
+      { id: 'm11-5', name: '曹阳', phone: '131****5570', isCaptain: false, checkedIn: false },
+      { id: 'm11-6', name: '邓雷', phone: '131****5571', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '09:40', text: '预约成功：因 90 天内 3 次噪声违规，30 天内仅可预约 20:00 前结束时段，本场 18:00–20:00（R-NIGHT-1）', tone: 'warning' },
+      { at: '09:40', text: '夜间限制押金已支付 75 元（标准 50 元上浮 50%），正常关灯离场且无新投诉将全额退回（R-NIGHT-1）', tone: 'warning' },
+      { at: '09:41', text: '已向全部队员公示统一结束时间 20:00（关灯离场），队长口头承诺不改变平台规则', tone: 'info' }
+    ]
+  },
+  {
+    id: 'B012',
+    code: '552072',
+    courtId: 'court-2',
+    halves: ['H1'],
+    scope: 'half',
+    date: TODAY,
+    start: '20:00',
+    end: '22:00',
+    headcount: 5,
+    acceptMerge: true,
+    teamName: '夜豹队',
+    captainId: 'u-bao',
+    captainName: '鲍越',
+    captainPhone: '135****6677',
+    fixedTeam: false,
+    credit: 74,
+    nightLock: 1,
+    status: 'booked',
+    payStatus: 'depositPaid',
+    checkInCode: '552072',
+    lighting: { enabled: false, minutes: 0, fee: 0, deposit: 75 },
+    fees: [],
+    members: [
+      { id: 'm12-1', name: '鲍越', phone: '135****6677', isCaptain: true, checkedIn: false },
+      { id: 'm12-2', name: '秦川', phone: '135****6678', isCaptain: false, checkedIn: false },
+      { id: 'm12-3', name: '许冲', phone: '135****6679', isCaptain: false, checkedIn: false },
+      { id: 'm12-4', name: '何峰', phone: '135****6680', isCaptain: false, checkedIn: false },
+      { id: 'm12-5', name: '吕萌', phone: '135****6681', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '10:02', text: '预约成功：90 天内 2 次噪声违规，30 天内夜间预约押金上浮 50%（R-NIGHT-1）', tone: 'warning' },
+      { at: '10:02', text: '夜间限制押金已支付 75 元（半场标准 50 元 ×1.5），正常关灯离场无新投诉全额退回', tone: 'warning' },
+      { at: '10:03', text: '已向队员公示统一结束时间 22:00（该场地静音截止 22:00，须关灯离场）', tone: 'info' }
+    ]
   }
 ]
 
@@ -585,5 +661,134 @@ export const MERGE_REQUESTS: MergeRequest[] = [
     status: 'rejected',
     unreasonable: true,
     time: '17:52'
+  }
+]
+
+/**
+ * 噪声投诉记录（R-NOISE-1 / R-NIGHT-1）
+ * 每行一次投诉：投诉时间、场地使用队伍、照明关闭时间、管理员现场提醒记在一起。
+ * 按队长手机号归并同一球队，90 天窗口用于夜间限制判定。
+ */
+export const NOISE_RECORDS: NoiseRecord[] = [
+  // ===== 散客联队（周浩 137****2201，A区 · 静音截止 21:00）=====
+  {
+    id: 'NR-001',
+    time: '21:12', date: '2026-09-13', courtId: 'court-1',
+    teamName: '散客联队', captainName: '周浩', teamKey: '137****2201',
+    source: '望江新村 3 栋 张阿姨',
+    desc: '过 21:00 静音截止后仍在大声扣篮、呐喊，家中老人无法入睡。',
+    outcome: 'firstWarned',
+    lightOffAt: '21:25',
+    reminders: [
+      { at: '21:12', by: 'worker', db: 73, verified: true, text: '林芳到场实测 73dB（限值 60dB），首次劝导，队长承诺 21:25 前关灯离场' },
+      { at: '21:25', by: 'worker', db: 58, verified: true, text: '复查 58dB，队伍已关灯离场，登记照明关闭时间 21:25' }
+    ]
+  },
+  {
+    id: 'NR-002',
+    time: '20:48', date: '2026-09-20', courtId: 'court-1',
+    teamName: '散客联队', captainName: '周浩', teamKey: '137****2201',
+    source: '望江新村 5 栋 多户联名',
+    desc: '24 小时内第 2 次被投诉：砸篮板声响巨大，劝导后仍反复。',
+    outcome: 'secondFined',
+    lightOffAt: '21:02',
+    reminders: [
+      { at: '20:48', by: 'admin', db: 75, verified: true, text: '老周到场实测 75dB，口头警告并通知社区' },
+      { at: '20:55', by: 'worker', db: 72, verified: true, text: '林芳第 2 次核实仍超标，收取社区安宁费 50 元、信用 -5，书面告知第 3 次暂停预约 30 天' },
+      { at: '21:02', by: 'admin', db: 60, verified: true, text: '监督关灯离场，登记照明关闭时间 21:02' }
+    ]
+  },
+  {
+    id: 'NR-003',
+    time: '19:05', date: TODAY, courtId: 'court-1', bookingId: 'B002', incidentId: 'I-001',
+    teamName: '散客联队', captainName: '周浩', teamKey: '137****2201',
+    source: '望江新村 3 栋 张阿姨（139****6621）',
+    desc: 'H2 队伍 18:00 起持续大声喧哗、砸篮筐，此为今晚第 1 次投诉。',
+    outcome: 'open',
+    reminders: [
+      { at: '19:12', by: 'worker', db: 74, verified: true, text: '林芳到场劝导，队长周浩承诺降低音量；现场噪声由 74dB 降至 61dB（待办结）' }
+    ]
+  },
+
+  // ===== 夜鹰队（高夜 131****5566，河滨 · 静音截止 22:00）—— 已触发 level 2 时段限制 =====
+  {
+    id: 'NR-101',
+    time: '22:08', date: '2026-08-22', courtId: 'court-3',
+    teamName: '夜鹰队', captainName: '高夜', teamKey: '131****5566',
+    source: '河滨公寓 2 号楼 刘先生',
+    desc: '超过 22:00 静音截止仍在比赛呐喊。',
+    outcome: 'firstWarned',
+    lightOffAt: '22:20',
+    reminders: [
+      { at: '22:08', by: 'worker', db: 71, verified: true, text: '到场实测 71dB，首次劝导' },
+      { at: '22:20', by: 'worker', db: 57, verified: true, text: '关灯离场，登记照明关闭时间 22:20' }
+    ]
+  },
+  {
+    id: 'NR-102',
+    time: '22:15', date: '2026-09-05', courtId: 'court-3',
+    teamName: '夜鹰队', captainName: '高夜', teamKey: '131****5566',
+    source: '河滨公寓 2 号楼 3 户投诉',
+    desc: '24 小时内第 2 次核实，比赛末段冲撞叫喊。',
+    outcome: 'secondFined',
+    lightOffAt: '22:26',
+    reminders: [
+      { at: '22:15', by: 'worker', db: 74, verified: true, text: '实测 74dB' },
+      { at: '22:21', by: 'worker', db: 70, verified: true, text: '第 2 次核实超标，收社区安宁费 50 元、信用 -5' },
+      { at: '22:26', by: 'admin', db: 59, verified: true, text: '监督关灯离场，登记照明关闭时间 22:26' }
+    ]
+  },
+  {
+    id: 'NR-103',
+    time: '22:20', date: '2026-09-19', courtId: 'court-3',
+    teamName: '夜鹰队', captainName: '高夜', teamKey: '131****5566',
+    source: '河滨公寓物业 + 2 号楼住户',
+    desc: '90 天内第 3 次核实违规，超时 20 分钟仍未关灯。',
+    outcome: 'secondFined',
+    lightOffAt: '22:31',
+    reminders: [
+      { at: '22:20', by: 'worker', db: 76, verified: true, text: '实测 76dB，第 3 次违规：收 50 元并触发 R-NIGHT-1 时段限制（30 天内仅可约 20:00 前结束时段、押金上浮 50%）' },
+      { at: '22:31', by: 'admin', db: 58, verified: true, text: '强制关灯，登记照明关闭时间 22:31；限制决定已短信送达队长高夜' }
+    ]
+  },
+  {
+    id: 'NR-104',
+    time: '21:42', date: '2026-09-25', courtId: 'court-3',
+    teamName: '夜鹰队', captainName: '高夜', teamKey: '131****5566',
+    source: '河滨公寓 2 号楼（电话反映）',
+    desc: '限制生效后住户仍来电反映有运球声；队伍当晚预约为 18:00–20:00 时段。',
+    outcome: 'unverified',
+    lightOffAt: '19:58',
+    reminders: [
+      { at: '21:42', by: 'worker', db: 54, verified: false, text: '到场实测 54dB 未超标，场地已无人使用；查签到/照明记录，该队 19:58 已关灯离场，投诉不成立，回访居民说明' }
+    ]
+  },
+
+  // ===== 夜豹队（鲍越 135****6677，B区 · 静音截止 22:00）—— 已触发 level 1 押金上浮 =====
+  {
+    id: 'NR-201',
+    time: '21:40', date: '2026-09-06', courtId: 'court-2',
+    teamName: '夜豹队', captainName: '鲍越', teamKey: '135****6677',
+    source: '望江新村 5 栋 住户',
+    desc: '夜间拍球声大、互相喊话。',
+    outcome: 'firstWarned',
+    lightOffAt: '22:05',
+    reminders: [
+      { at: '21:40', by: 'worker', db: 70, verified: true, text: '实测 70dB，首次劝导' },
+      { at: '22:05', by: 'worker', db: 59, verified: true, text: '关灯离场，登记照明关闭时间 22:05' }
+    ]
+  },
+  {
+    id: 'NR-202',
+    time: '21:55', date: '2026-09-22', courtId: 'court-2',
+    teamName: '夜豹队', captainName: '鲍越', teamKey: '135****6677',
+    source: '望江新村 5 栋 住户（24h 内第 2 次）',
+    desc: '劝导后当晚再次被投诉核实。',
+    outcome: 'secondFined',
+    lightOffAt: '22:10',
+    reminders: [
+      { at: '21:55', by: 'worker', db: 72, verified: true, text: '第 2 次核实超标，收社区安宁费 50 元、信用 -5；触发 R-NIGHT-1 押金上浮 50%（30 天）' },
+      { at: '22:10', by: 'admin', db: 60, verified: true, text: '监督关灯离场，登记照明关闭时间 22:10，押金规则已短信告知' }
+    ]
   }
 ]

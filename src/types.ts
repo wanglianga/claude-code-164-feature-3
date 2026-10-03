@@ -98,6 +98,7 @@ export type FeeItemKind =
   | 'complaint'    // 噪声投诉处罚
   | 'sealRefund'   // 封场全额退款
   | 'reschedule'   // 改约补偿
+  | 'nightDeposit' // 夜间限制押金上浮
 
 export interface FeeItem {
   kind: FeeItemKind
@@ -145,6 +146,61 @@ export interface IncidentAction {
   text: string
 }
 
+/** 管理员/社区现场提醒（可多次） */
+export interface OnsiteReminder {
+  at: string
+  by: RoleId
+  /** 现场实测分贝，选填 */
+  db?: number
+  text: string
+  /** 居民投诉是否经现场核实成立 */
+  verified: boolean
+}
+
+/**
+ * 噪声投诉记录（R-NOISE-1 / R-NIGHT-1）
+ * 一次投诉一行：投诉时间、使用场地的队伍、照明关闭时间、管理员现场提醒全部记在一起
+ */
+export interface NoiseRecord {
+  id: string
+  /** 投诉时间 HH:mm */
+  time: string
+  date: string
+  courtId: string
+  /** 关联预约（可能为空：现场散队无预约） */
+  bookingId?: string
+  teamName: string
+  captainName: string
+  /** 归并同一球队的稳定键（队长手机号） */
+  teamKey: string
+  source: string
+  desc: string
+  /** 管理员现场提醒记录（首次劝导/二次核实等，可多条） */
+  reminders: OnsiteReminder[]
+  /** 照明实际关闭时间 HH:mm（管理员登记，静音截止前应关灯离场） */
+  lightOffAt?: string
+  /** 核实结果：首次劝导 / 二次核实收费 / 投诉不成立 / 待核验 */
+  outcome: 'open' | 'firstWarned' | 'secondFined' | 'unverified'
+  /** 关联工单 */
+  incidentId?: string
+}
+
+/** 球队夜间限制等级（R-NIGHT-1） */
+export type NightRestrictionLevel = 0 | 1 | 2
+
+export interface NightRestriction {
+  level: NightRestrictionLevel
+  /** 统计窗口内已核实违规次数 */
+  violations: number
+  /** 近 90 天全部投诉记录（含不成立，便于向居民公示） */
+  records: NoiseRecord[]
+  /** 押金上浮比例（level 1 = 0.5） */
+  depositExtra: number
+  /** level 2：只能预约结束时间不晚于此时刻的时段（HH:mm） */
+  latestEnd?: string
+  reason: string
+}
+
 /** 拼场申请 */
 export interface MergeRequest {
   id: string
@@ -188,6 +244,8 @@ export interface Booking {
   fixedTeam?: boolean
   /** 历史履约信用分（初始 100） */
   credit: number
+  /** 夜间限制等级快照（预约时按队长历史违规写入，R-NIGHT-1） */
+  nightLock?: NightRestrictionLevel
   /** 管理员改约/限制原因 */
   adminNote?: string
   /** 权益/核验时间线 */

@@ -8,7 +8,7 @@ import {
   useState, nowStr, addMember, toggleCheckIn, respondMerge,
   payDeposit, turnOnLight, endUsage, topUp, applyMerge, checkInByCode
 } from '../store'
-import { checkedInCount, rejectMergeCheck, hm, isActive, timeState } from '../lib/engine'
+import { checkedInCount, rejectMergeCheck, hm, isActive, timeState, platformEndTime } from '../lib/engine'
 import type { Booking, MergeRequest } from '../types'
 import BookingCard from '../components/BookingCard.vue'
 import BottomSheet from '../components/BottomSheet.vue'
@@ -114,6 +114,10 @@ function doCodeCheckIn() {
 }
 
 function courtName(id: string) { return state.courts.find(c => c.id === id)?.name ?? '' }
+function endOf(b: Booking) {
+  const c = state.courts.find(x => x.id === b.courtId)!
+  return platformEndTime({ start: b.start, end: b.end }, c)
+}
 </script>
 
 <template>
@@ -209,6 +213,7 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
           </NTag>
         </div>
         <div class="mc-row">📍 {{ courtName(b.courtId) }} · {{ b.scope === 'full' ? '全场' : '半场' }} {{ b.halves.join('+') }} · {{ b.start }}–{{ b.end }}</div>
+        <div class="mc-row" :class="{ 'end-cut': endOf(b) !== b.end }">⏰ 统一关灯离场时间 <b>{{ endOf(b) }}</b><template v-if="endOf(b) !== b.end">（场地静音截止，名义预约至 {{ b.end }}）</template>，队员同此口径 <RuleLink id="R-NIGHT-1" /></div>
         <div class="mc-row">
           👥 已报名 {{ b.members.length }}/{{ b.scope === 'full' ? 14 : 8 }} 人 ·
           已签到 {{ checkedInCount(b) }} 人
@@ -240,6 +245,11 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
     <BottomSheet :show="!!inviteTarget" :title="inviteTarget ? `${inviteTarget.teamName} · 队员与签到（签到码 ${inviteTarget.checkInCode}）` : ''"
       @update:show="v => !v && (inviteTarget = null)">
       <div v-if="inviteTarget" class="invite-box">
+        <div class="invite-endtime">
+          ⏰ 本队统一结束（关灯离场）时间：<b>{{ endOf(inviteTarget) }}</b>
+          <span v-if="endOf(inviteTarget) !== inviteTarget.end">（场地静音截止 {{ endOf(inviteTarget) }}，预约名义至 {{ inviteTarget.end }}）</span>
+          ，全体队员按此时间离场 <RuleLink id="R-NIGHT-1" />
+        </div>
         <div class="member-line" v-for="m in inviteTarget.members" :key="m.id">
           <span>
             <NTag v-if="m.isCaptain" size="tiny" type="info">队长</NTag>
@@ -325,5 +335,7 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
 .mc-row { font-size:12px; color:#555; line-height:1.9; }
 .mc-actions { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
 .invite-box { padding-bottom:10px; }
+.invite-endtime { background:#f0f7ff; color:#2b4a7a; border-radius:8px; padding:7px 9px; font-size:12px; line-height:1.6; margin-bottom:8px; }
+.end-cut { color:#ad6800; }
 .member-line { display:flex; justify-content:space-between; align-items:center; padding:8px 2px; border-bottom:1px solid #f2f2f2; font-size:13px; }
 </style>

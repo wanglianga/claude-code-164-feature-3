@@ -6,7 +6,7 @@ import {
 import type { Booking } from '../types'
 import {
   STATUS_META, PAY_META, FEE_META, checkedInCount, feeSummary,
-  fmt, hm, isActive, money, timeState
+  fmt, hm, isActive, money, timeState, platformEndTime, restrictionOf
 } from '../lib/engine'
 import { courtById, lightLive, nowStr } from '../store'
 import RuleLink from './RuleLink.vue'
@@ -27,6 +27,13 @@ const ts = computed(() => timeState(props.booking, nowStr.value))
 const risk = computed(() => bookingRisk(props.booking, state.incidents, nowStr.value))
 const present = computed(() => checkedInCount(props.booking))
 const summary = computed(() => feeSummary(props.booking, court.value, nowStr.value, !!light.value?.frozen))
+/** 平台统一结束（关灯离场）时间：队员与队长同一口径 */
+const endTime = computed(() => platformEndTime(
+  { start: props.booking.start, end: props.booking.end }, court.value))
+const night = computed(() => restrictionOf(
+  { captainPhone: props.booking.captainPhone, captainName: props.booking.captainName },
+  state.noiseRecords))
+const nightLevel = computed(() => props.booking.nightLock ?? night.value.level)
 
 const remainText = computed(() => {
   if (props.booking.status === 'booked') {
@@ -72,6 +79,25 @@ const progress = computed(() => {
       <span v-else>{{ booking.scope === 'full' ? '全场' : '半场' }} {{ booking.halves.join('+') }}</span>
       <span style="flex:1"></span>
       <NText depth="3" style="font-size:12px">{{ booking.date }} {{ booking.start }}–{{ booking.end }}</NText>
+    </div>
+
+    <!-- 夜间限制告知：队长历史违规原因 + 本次押金规则（队员同样可见） -->
+    <div v-if="nightLevel >= 1" class="bc-night">
+      <div class="bn-line">
+        🌙 <b>夜间限制 L{{ nightLevel }}</b>（R-NIGHT-1）：
+        <template v-if="nightLevel === 1">30 天内夜间预约照明押金<b>上浮 50%</b>（半场 50→75 / 全场 100→150），正常关灯离场且无新核实投诉全额退回。</template>
+        <template v-else>30 天内<b>仅可预约 20:00 前结束时段</b>、照明押金上浮 50%，期内再违规重新起算 30 天。</template>
+      </div>
+      <div class="bn-reason">历史违规原因：近 90 天核实违规 {{ night.violations }} 次<span v-if="night.records.length">（{{ night.records.filter(r => r.outcome === 'firstWarned' || r.outcome === 'secondFined').map(r => r.date).slice(-3).join('、') }}）</span>。
+        <RuleLink id="R-NIGHT-1" />
+      </div>
+    </div>
+
+    <!-- 统一结束（关灯离场）时间：队长与队员同一口径 -->
+    <div class="bc-endtime" :class="{ cut: endTime !== booking.end }">
+      ⏰ 统一结束时间（关灯离场）：<b>{{ endTime }}</b>
+      <template v-if="endTime !== booking.end"> · 场地 {{ court.noiseCurfew }}:00 静音截止，预约名义至 {{ booking.end }} 也须 {{ endTime }} 离场</template>
+      <span class="be-note">（全体队员可见，队长口头承诺不改变平台规则）</span>
     </div>
 
     <!-- 进行中：剩余时间大字 + 进度条 -->
@@ -184,6 +210,13 @@ const progress = computed(() => {
 .bc-team { font-weight: 700; font-size: 15px; }
 .bc-row { display:flex; align-items:center; gap:6px; font-size:13px; margin:4px 0; color:#333; }
 .bc-label { color:#999; font-size:12px; min-width:34px; }
+.bc-night { background:#fff3f0; border:1px solid #ffd2c4; border-radius:9px; padding:7px 9px; margin:7px 0; font-size:12px; line-height:1.7; color:#7a2b1d; }
+.bn-line b { color:#cf4328; }
+.bn-reason { color:#9a6a5e; font-size:11.5px; margin-top:2px; }
+.bc-endtime { background:#f0f7ff; border-radius:8px; padding:6px 9px; font-size:12px; color:#2b4a7a; line-height:1.6; margin-bottom:6px; }
+.bc-endtime.cut { background:#fff7e6; color:#7a4d00; }
+.bc-endtime b { font-size:14px; }
+.be-note { color:#99a; color:#98a0b3; font-size:10.5px; margin-left:2px; }
 .bc-live { margin:8px 0; }
 .bc-remain { font-size:22px; font-weight:800; margin-bottom:4px; }
 .r-success { color:#18a058; }

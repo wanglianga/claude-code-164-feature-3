@@ -4,7 +4,7 @@ import { NButton, NTag, NEmpty, NAlert, NGrid, NGridItem } from 'naive-ui'
 import { useState, nowStr, releaseBooking, endUsage } from '../store'
 import {
   SURFACE_META, HOOP_META, bookingsOfHalf, checkedInCount, courtRisk,
-  fmt, halfSealed, isActive, timeState
+  fmt, halfSealed, isActive, timeState, platformEndTime
 } from '../lib/engine'
 import type { Booking, Court } from '../types'
 import RiskTag from '../components/RiskTag.vue'
@@ -45,6 +45,10 @@ function remainBig(b: Booking) {
 
 function release(b: Booking) { releaseBooking(b.id) }
 function forceEnd(b: Booking) { endUsage(b.id, true) }
+function endOf(b: Booking) {
+  const c = state.courts.find(x => x.id === b.courtId)!
+  return platformEndTime({ start: b.start, end: b.end }, c)
+}
 </script>
 
 <template>
@@ -93,12 +97,17 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
           <div class="hr-main">
             <span class="hr-team">✅ {{ currentOf(c, h)!.teamName }}</span>
             <NTag v-if="currentOf(c, h)!.fixedTeam" size="tiny" type="info">固定队</NTag>
+            <NTag v-if="currentOf(c, h)!.nightLock === 2" size="tiny" type="error">🌙 限 20:00 前</NTag>
+            <NTag v-else-if="currentOf(c, h)!.nightLock === 1" size="tiny" type="warning">🌙 押金上浮</NTag>
             <span :class="['hr-remain', remainBig(currentOf(c, h)!).cls]">{{ remainBig(currentOf(c, h)!).text }}</span>
           </div>
           <div class="hr-meta">
             {{ currentOf(c, h)!.start }}–{{ currentOf(c, h)!.end }} ·
             到场 {{ checkedInCount(currentOf(c, h)!) }}/{{ currentOf(c, h)!.members.length }} ·
             签到码 {{ currentOf(c, h)!.checkInCode }}
+          </div>
+          <div class="hr-meta end-cut">
+            ⏰ 统一关灯离场 {{ endOf(currentOf(c, h)!) }}（队长与队员同一口径，<RuleLink id="R-NIGHT-1" />）
           </div>
           <div v-if="timeState(currentOf(c, h)!, nowStr).releasable" class="hr-release">
             ⏰ 开场超 20 分钟未签到 → 可释放给候补散客
@@ -115,8 +124,12 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
         </div>
 
         <div v-else-if="nextOf(c, h)" class="hr-body idle">
-          <div class="hr-main"><span class="hr-team">🕓 下一场：{{ nextOf(c, h)!.teamName }}</span></div>
-          <div class="hr-meta">{{ nextOf(c, h)!.start }}–{{ nextOf(c, h)!.end }} · 当前空闲，散客可现场排队候补</div>
+          <div class="hr-main">
+            <span class="hr-team">🕓 下一场：{{ nextOf(c, h)!.teamName }}</span>
+            <NTag v-if="nextOf(c, h)!.nightLock === 2" size="tiny" type="error">🌙 限 20:00 前</NTag>
+            <NTag v-else-if="nextOf(c, h)!.nightLock === 1" size="tiny" type="warning">🌙 押金上浮</NTag>
+          </div>
+          <div class="hr-meta">{{ nextOf(c, h)!.start }}–{{ nextOf(c, h)!.end }} · 统一关灯离场 {{ endOf(nextOf(c, h)!) }} · 当前空闲，散客可现场排队候补</div>
         </div>
 
         <div v-else class="hr-body idle">
@@ -166,6 +179,7 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
 .r-warn { color:#f0a020; }
 .r-error { color:#d03050; }
 .hr-meta { font-size:12px; color:#888; margin-top:3px; }
+.hr-meta.end-cut { color:#ad6800; }
 .hr-off { font-weight:700; color:#d03050; font-size:14px; }
 .hr-rule { font-size:12px; color:#999; margin-top:2px; }
 .hr-release { background:#fff7e6; border-radius:6px; padding:4px 6px; font-size:12px; color:#ad6800; margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; }

@@ -8,8 +8,10 @@ import {
 import { useState, createBooking, reportIncident, nowStr } from '../store'
 import {
   SURFACE_META, HOOP_META, courtRisk, bookingsOfHalf, halfSealed, isActive,
-  slotOptions, money, hm, timeState
+  slotOptions, money, hm, timeState, restrictionOf, nightDeposit,
+  slotBlockedByNight, platformEndTime
 } from '../lib/engine'
+import type { SlotOption } from '../lib/engine'
 import type { Booking, Court } from '../types'
 import RiskTag from '../components/RiskTag.vue'
 import RuleLink from '../components/RuleLink.vue'
@@ -57,6 +59,22 @@ const form = ref({
 const slots = computed(() => selectedCourt.value ? slotOptions(selectedCourt.value, state.bookings) : [])
 const chosenSlot = computed(() => slots.value.find(s => s.label === form.value.slot))
 
+/** 预约人当前夜间限制画像（按队长手机号/姓名实时匹配） */
+const formRestriction = computed(() => {
+  if (!selectedCourt.value) return null
+  return restrictionOf(
+    { captainPhone: form.value.captainPhone || '未填写', captainName: form.value.captainName },
+    state.noiseRecords)
+})
+
+function slotDisabled(s: SlotOption | undefined): boolean {
+  if (!s) return true
+  if (form.value.scope === 'full') return !s.fullAvailable
+  if (s.freeHalves.length === 0) return true
+  if (formRestriction.value && slotBlockedByNight(s.end, formRestriction.value)) return true
+  return false
+}
+
 function halfOptions(c: Court | null) {
   if (!c) return []
   return Object.keys(c.hoops).map(h => {
@@ -81,11 +99,14 @@ const feePreview = computed(() => {
     return { deposit: 0, rate: 0, perMin: 0, note: '该时段为白天，无需照明；场地本身免费开放' }
   }
   const halfFactor = form.value.scope === 'full' ? 2 : 1
-  const deposit = form.value.scope === 'full' ? 100 : c.lighting.deposit
+  const baseDeposit = form.value.scope === 'full' ? 100 : c.lighting.deposit
+  const deposit = nightDeposit(baseDeposit, formRestriction.value?.level ?? 0)
   const perMin = c.lighting.pricePerMinute * halfFactor * (form.value.acceptMerge ? 0.8 : 1)
   const mins = (hm(slot.end) - hm(slot.start))
   return {
     deposit,
+    baseDeposit,
+    nightLevel: formRestriction.value?.level ?? 0,
     rate: perMin,
     perMin,
     max: perMin * mins,
@@ -96,10 +117,21 @@ const feePreview = computed(() => {
   }
 })
 
+/** 选中时段的平台统一结束（关灯离场）时间 */
+const platformEnd = computed(() => {
+  const c = selectedCourt.value
+  const s = chosenSlot.value
+  if (!c || !s) return ''
+  return platformEndTime({ start: s.start, end: s.end }, c)
+})
+
 function submit() {
   const c = selectedCourt.value!
   const slot = chosenSlot.value!
   if (!slot) return message.warning('请选择时间段')
+  if (formRestriction.value && slotBlockedByNight(slot.end, formRestriction.value)) {
+    return message.warning('你所在球队处于 level 2 夜间限制：30 天内仅可预约 20:00 前结束的时段（R-NIGHT-1）')
+  }
   let halves: string[]
   if (form.value.scope === 'full') {
     if (!slot.fullAvailable) return message.warning('该时段没有两个相邻空闲半场，无法约全场')
@@ -248,12 +280,30 @@ function occupancyBlocks(c: Court, h: string) {
 
         <NFormItem label="时间段（今日 9/27）">
           <NSelect v-model:value="form.slot" placeholder="选择 2 小时时段"
-            :options="slots.map(s => ({
-              label: s.label + (s.night ? '🌙' : '☀️') + (form.scope === 'full' ? (s.fullAvailable ? '（全场可约）' : '（全场不足）') : (s.freeHalves.length ? `（余 ${s.freeHalves.length} 个半场）` : '（已满）')),
-              value: s.label,
-              disabled: form.scope === 'full' ? !s.fullAvailable : s.freeHalves.length === 0
-            }))" />
+            :options="slots.map(s => {
+              const nightBlocked = !!formRestriction && slotBlockedByNight(s.end, formRestriction)
+              const cap = nightBlocked
+                ? '（夜间限制：仅可约 20:00 前结束）'
+                : form.scope === 'full' ? (s.fullAvailable ? '（全场可约）' : '（全场不足）')
+                  : (s.freeHalves.length ? `（余 ${s.freeHalves.length} 个半场）` : '（已满）')
+              return {
+                label: s.label + (s.night ? '🌙' : '☀️') + cap,
+                value: s.label,
+                disabled: slotDisabled(s)
+              }
+            })" />
         </NFormItem>
+
+        <!-- 预约前：历史违规原因 + 本次押金规则（队长确认，减少口头承诺与平台规则不一致） -->
+        <NAlert v-if="formRestriction && formRestriction.level >= 1" type="error" style="margin:0 0 8px">
+          <div style="font-size:12px;line-height:1.7">
+            <div>🌙 <b>夜间限制 L{{ formRestriction.level }} 生效中</b>（R-NIGHT-1）：{{ form.captainName || '该实名' }} 所在球队近 90 天有
+              <b>{{ formRestriction.violations }} 次经现场核实的噪声违规</b>。</div>
+            <div style="white-space:pre-line;margin-top:3px;color:#7a2b1d">{{ formRestriction.reason }}</div>
+            <div style="margin-top:3px">本次押金规则：<b>标准 ¥{{ feePreview?.baseDeposit }} → 收取 ¥{{ feePreview?.deposit }}（上浮 50%）</b>，
+              正常关灯离场且无新核实投诉将全额退回。<template v-if="formRestriction.level >= 2">20:00 后结束的时段<b>已禁止预约</b>。</template></div>
+          </div>
+        </NAlert>
 
         <NGrid :cols="2" :x-gap="8">
           <NGridItem>
@@ -290,8 +340,12 @@ function occupancyBlocks(c: Court, h: string) {
         <NAlert v-if="feePreview" :type="feePreview.fault ? 'error' : 'info'" style="margin-top:8px">
           <div style="font-size:12px;line-height:1.7">
             <div>💰 {{ feePreview.note }}</div>
-            <div v-if="feePreview.deposit > 0">单价 ¥{{ money(feePreview.perMin) }}/分钟{{ form.acceptMerge ? '（已含 8 折）' : '' }}，拼场人均更低</div>
-            <div>⏰ 开场 15 分钟内签到免责；提前关灯即停止计费 <RuleLink id="R-LATE-1" /> <RuleLink id="R-OT-1" /></div>
+            <div v-if="feePreview.deposit > 0">
+              单价 ¥{{ money(feePreview.perMin) }}/分钟{{ form.acceptMerge ? '（已含 8 折）' : '' }}，拼场人均更低
+              <template v-if="(feePreview?.nightLevel ?? 0) >= 1">；<b style="color:#cf4328">夜间限制押金 ¥{{ feePreview?.deposit }}（标准 ¥{{ feePreview?.baseDeposit }}，上浮 50%）</b></template>
+            </div>
+            <div v-if="platformEnd">⏰ 统一结束（关灯离场）时间 <b>{{ platformEnd }}</b>：提交后向全体队员公示，队员可见同一结束时间，队长口头承诺不改变平台规则 <RuleLink id="R-NIGHT-1" /></div>
+            <div>开场 15 分钟内签到免责；提前关灯即停止计费 <RuleLink id="R-LATE-1" /> <RuleLink id="R-OT-1" /></div>
           </div>
         </NAlert>
 

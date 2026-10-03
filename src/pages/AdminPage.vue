@@ -122,6 +122,7 @@ const fairness = computed(() => {
       <NButton size="small" type="primary" ghost round @click="openIncidents()">
         事件处置（{{ state.incidents.filter(i => i.status !== 'resolved' && i.status !== 'penalized').length }}）
       </NButton>
+      <NButton size="small" type="warning" ghost round @click="openIncidents('noise')">🌙 夜间限制效果</NButton>
     </div>
 
     <!-- 分时段预约表 -->
@@ -145,6 +146,8 @@ const fairness = computed(() => {
           <NTag size="tiny" :type="PAY_META[b.payStatus].type">{{ PAY_META[b.payStatus].label }}</NTag>
           <NTag size="tiny">信用 {{ b.credit }}</NTag>
           <NTag v-if="b.fixedTeam" size="tiny" type="info">固定球队</NTag>
+          <NTag v-if="b.nightLock === 2" size="tiny" type="error">🌙 限20:00前·押金75</NTag>
+          <NTag v-else-if="b.nightLock === 1" size="tiny" type="warning">🌙 押金上浮50%</NTag>
         </div>
         <div v-if="isActive(b, nowStr)" class="ar-live">
           照明已用 {{ feeSummary(b, state.courts.find(c => c.id === b.courtId), nowStr).light?.minutes ?? 0 }} 分钟 ·

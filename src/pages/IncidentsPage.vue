@@ -7,11 +7,13 @@ import {
 import {
   useState, nowStr,
   resolveLightFault, resolveNoise, resolveMinor, issueSealOrder,
-  ruleDispute, addIncidentAction, setIncidentStatus
+  ruleDispute, addIncidentAction, setIncidentStatus, resolveNoiseUnverified
 } from '../store'
 import { INCIDENT_META } from '../lib/engine'
 import type { Incident, IncidentStatus, RoleId } from '../types'
 import RuleLink from '../components/RuleLink.vue'
+import NoiseRecordCard from '../components/NoiseRecordCard.vue'
+import NightRestrictionPanel from '../components/NightRestrictionPanel.vue'
 import { incidentFilter } from '../lib/ui'
 
 const state = useState()
@@ -71,7 +73,11 @@ function lightChoice(inc: Incident, c: 'wait' | 'reschedule' | 'refund') {
 
 // 噪声
 function noiseFirst(inc: Incident) { resolveNoise(inc.id, false); message.success('劝导办结，已告知再次核实后果') }
-function noiseSecond(inc: Incident) { resolveNoise(inc.id, true); message.success('已收取 50 元社区安宁费并答复居民') }
+function noiseSecond(inc: Incident) { resolveNoise(inc.id, true); message.success('已收 50 元社区安宁费、同步夜间限制并答复居民') }
+function noiseUnverified(inc: Incident) {
+  resolveNoiseUnverified(inc.id, '现场实测噪声未超标，队伍已正常活动，投诉不成立')
+  message.success('已登记投诉不成立（不计违规），并回访居民')
+}
 
 // 未成年人
 function minorDone(inc: Incident) { resolveMinor(inc.id); message.success('监护人接回登记完成') }
@@ -108,6 +114,9 @@ const typeOptions = [
       </div>
     </NAlert>
 
+    <!-- 社区端：夜间限制是否降低投诉 -->
+    <NightRestrictionPanel />
+
     <div class="filters">
       <NRadioGroup v-model:value="filter" size="small">
         <NRadio value="all">全部</NRadio>
@@ -133,6 +142,9 @@ const typeOptions = [
       <div class="ic-meta">📍 {{ courtName(inc.courtId) }} · 关联预约 {{ inc.bookingIds.length ? inc.bookingIds.join('、') : '（全场地）' }}</div>
       <div class="ic-desc">{{ inc.desc }}</div>
       <div class="ic-source">📞 来源/投诉人：{{ inc.source }}</div>
+
+      <!-- 噪声投诉：四要素聚合留痕 -->
+      <NoiseRecordCard v-if="inc.type === 'noise'" :incident="inc" />
 
       <!-- 关联预约权益状态 -->
       <div v-if="linkedBookings(inc).length" class="ic-links">
@@ -177,12 +189,15 @@ const typeOptions = [
 
         <!-- 噪声 -->
         <template v-else-if="inc.type === 'noise'">
-          <div class="handle-title" v-if="isWorker">🔊 到场噪声核验（R-NOISE-1，投诉处理过程须答复居民并留痕）：</div>
+          <div class="handle-title" v-if="isWorker">🔊 到场噪声核验（R-NOISE-1，投诉处理过程须答复居民并留痕；核实违规累计 2 次将触发 R-NIGHT-1 夜间限制）：</div>
           <div class="handle-btns" v-if="isWorker">
-            <NButton size="small" round type="primary" @click="noiseFirst(inc)">首次劝导·办结</NButton>
-            <NButton size="small" round type="error" ghost @click="noiseSecond(inc)">24h内第2次核实·收50元</NButton>
+            <NButton size="small" round type="primary" @click="noiseFirst(inc)">首次劝导·办结（计 1 次违规）</NButton>
+            <NButton size="small" round type="error" ghost @click="noiseSecond(inc)">24h内第2次核实·收50元（触发/升级限制）</NButton>
+            <NButton size="small" round type="success" ghost @click="noiseUnverified(inc)">现场未超标·投诉不成立</NButton>
           </div>
-          <div v-else class="handle-title">噪声投诉由社区工作人员到场核验处置。</div>
+          <div v-else class="handle-title">
+            噪声投诉由社区工作人员到场核验处置；管理员可在下方补记现场提醒与照明关闭时间。
+          </div>
         </template>
 
         <!-- 未成年人 -->
@@ -224,14 +239,23 @@ const typeOptions = [
           <div class="handle-title">现场核验记录（适用 <RuleLink :id="inc.type === 'rain' ? 'R-WX-1' : 'R-WX-2'" />）：</div>
         </template>
 
-        <!-- 通用补充记录 -->
-        <div class="note-box">
+        <!-- 通用补充记录（噪声工单已在上方噪声记录卡内登记现场提醒/关灯时间） -->
+        <div v-if="inc.type !== 'noise'" class="note-box">
           <NInput v-model:value="noteText[inc.id]" type="textarea" :rows="2" size="small"
             :placeholder="`${state.role === 'admin' ? '管理员' : '社区工作人员'}到场核验情况与处理措施（必填后写入工单）`" />
           <div class="handle-btns" style="margin-top:6px">
             <NButton size="small" round @click="addNote(inc)">写入记录</NButton>
             <NButton v-if="canHandle" size="small" round type="success" ghost
               @click="addNote(inc, true)">记录并办结工单</NButton>
+          </div>
+        </div>
+        <!-- 噪声工单：管理员可直接办结 -->
+        <div v-else-if="inc.type === 'noise' && isAdmin" class="note-box">
+          <NInput v-model:value="noteText[inc.id]" type="textarea" :rows="2" size="small"
+            placeholder="管理员现场核验/监督关灯等补充记录（选填）" />
+          <div class="handle-btns" style="margin-top:6px">
+            <NButton size="small" round @click="addNote(inc)">写入记录</NButton>
+            <NButton size="small" round type="success" ghost @click="addNote(inc, true)">记录并办结工单</NButton>
           </div>
         </div>
       </div>

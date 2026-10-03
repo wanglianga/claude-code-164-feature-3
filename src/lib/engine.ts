@@ -1,6 +1,7 @@
 import type {
   Booking, Court, FeeItem, Incident, IncidentType, IncidentStatus, BookingStatus,
-  MergeRequest, PayStatus, SurfaceStatus, HoopStatus
+  MergeRequest, NoiseRecord, NightRestriction, NightRestrictionLevel,
+  PayStatus, SurfaceStatus, HoopStatus
 } from '../types'
 
 // ---------- 时间工具 ----------
@@ -80,7 +81,8 @@ export const FEE_META: Record<string, { label: string; type: 'success' | 'warnin
   weather: { label: '天气补偿', type: 'success' },
   complaint: { label: '噪声处罚', type: 'error' },
   sealRefund: { label: '封场退款', type: 'success' },
-  reschedule: { label: '改约补偿', type: 'success' }
+  reschedule: { label: '改约补偿', type: 'success' },
+  nightDeposit: { label: '夜间限制押金', type: 'warning' }
 }
 
 // ---------- 照明实时计费 ----------
@@ -235,6 +237,8 @@ export function bookingRisk(b: Booking, incidents: Incident[], nowHm: string): R
   if (b.status === 'booked' && ts.lateMinutes > 0 && ts.lateMinutes < 20) raise('medium', `已迟到 ${ts.lateMinutes} 分钟`)
   if (b.credit < 80) raise('medium', `信用分 ${b.credit}（低于 80，冲突排序靠后）`)
   if (b.credit < 60) raise('high', `信用分 ${b.credit}（低于 60，应暂停预约资格）`)
+  if (b.nightLock === 2) raise('medium', '夜间限制（level 2）：30 天内仅可约 20:00 前结束时段、押金上浮 50%（R-NIGHT-1）')
+  else if (b.nightLock === 1) raise('low', '夜间限制（level 1）：30 天内夜间预约押金上浮 50%（R-NIGHT-1）')
 
   for (const inc of incidents) {
     if (!inc.bookingIds.includes(b.id) || !ACTIVE_INCIDENT.includes(inc.status)) continue
@@ -360,4 +364,141 @@ export function rejectMergeCheck(b: Booking, req: MergeRequest): { unreasonable:
   }
   if (total >= 6) return { unreasonable: true, hint: '拼入后达到半场合理人数（≥6 人），无理由拒绝将收 20 元资源占用费并扣信用 5 分（R-MERGE-1）' }
   return { unreasonable: false, hint: '当前人数不足，建议同意拼场以提高场地利用率' }
+}
+
+// ---------- 夜间限制（R-NIGHT-1） ----------
+export const NIGHT_WINDOW_DAYS = 90
+export const NIGHT_RESTRICT_DAYS = 30
+export const NIGHT_DEPOSIT_EXTRA = 0.5
+/** level 2：仅可预约结束时间不晚于此时刻的时段 */
+export const NIGHT_LEVEL2_END = '20:00'
+
+function daysBetween(a: string, b: string): number {
+  const [ya, ma, da] = a.split('-').map(Number)
+  const [yb, mb, db] = b.split('-').map(Number)
+  return Math.round((Date.UTC(yb, mb - 1, db) - Date.UTC(ya, ma - 1, da)) / 86400000)
+}
+
+/** 一次投诉是否构成"经现场核实的噪声违规"（首次劝导计 1 次、二次核实收费计 1 次） */
+export function isNoiseViolation(r: NoiseRecord): boolean {
+  return (r.outcome === 'firstWarned' || r.outcome === 'secondFined')
+    && r.reminders.some(x => x.verified)
+}
+
+/** 同一球队的夜间限制画像（按队长实名手机号归并，90 天窗口） */
+export function teamRestriction(teamKey: string, records: NoiseRecord[], today = '2026-09-27'): NightRestriction {
+  const inWindow = records
+    .filter(r => r.teamKey === teamKey && daysBetween(r.date, today) >= 0 && daysBetween(r.date, today) <= NIGHT_WINDOW_DAYS)
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+  const vios = inWindow.filter(isNoiseViolation)
+  const latest = vios[vios.length - 1]
+  const active = !!latest && daysBetween(latest.date, today) <= NIGHT_RESTRICT_DAYS && vios.length >= 2
+  let level: NightRestrictionLevel = 0
+  if (active) level = vios.length >= 3 ? 2 : 1
+  const reasonLines = vios.map((r, i) => {
+    const db = r.reminders.find(x => x.db)?.db
+    return `${i + 1}. ${r.date} ${r.time} ${r.outcome === 'secondFined' ? '24h 内第 2 次核实，收社区安宁费 50 元' : '现场核实首次劝导'}${db ? `（实测 ${db}dB）` : ''}，${r.lightOffAt ? r.lightOffAt + ' 关灯离场' : '处置见记录'}`
+  })
+  const reason = level > 0
+    ? `近 ${NIGHT_WINDOW_DAYS} 天内经核实噪声违规 ${vios.length} 次：\n${reasonLines.join('\n')}。最近一次 ${latest!.date}，限制期至该日起 ${NIGHT_RESTRICT_DAYS} 天；期内再违规将重新起算。`
+    : ''
+  return {
+    level,
+    violations: vios.length,
+    records: inWindow,
+    depositExtra: level >= 1 ? NIGHT_DEPOSIT_EXTRA : 0,
+    latestEnd: level >= 2 ? NIGHT_LEVEL2_END : undefined,
+    reason
+  }
+}
+
+/** 按预约（队长手机号）取限制画像；新预约表单未填手机号时回退按姓名匹配 */
+export function restrictionOf(b: Pick<Booking, 'captainPhone' | 'captainName'>, records: NoiseRecord[], today = '2026-09-27'): NightRestriction {
+  let r = teamRestriction(b.captainPhone, records, today)
+  if (r.records.length === 0 && b.captainName) {
+    const key = records.find(x => x.captainName === b.captainName)?.teamKey
+    if (key) r = teamRestriction(key, records, today)
+  }
+  return r
+}
+
+/** 夜间限制押金（level≥1 上浮 50%，半场 50→75、全场 100→150） */
+export function nightDeposit(base: number, level: NightRestrictionLevel): number {
+  return level >= 1 ? Math.round(base * (1 + NIGHT_DEPOSIT_EXTRA)) : base
+}
+
+/** level 2 时段限制：所选时段结束时间晚于 20:00 则不可约 */
+export function slotBlockedByNight(end: string, r: NightRestriction): boolean {
+  return r.level >= 2 && hm(end) > hm(NIGHT_LEVEL2_END)
+}
+
+/**
+ * 平台统一结束（关灯离场）时间：夜间场次不得晚于场地静音截止。
+ * 用于向队长与队员公示同一口径，避免队长口头承诺与平台规则不一致。
+ */
+export function platformEndTime(b: Pick<Booking, 'start' | 'end'>, court: Court): string {
+  const curfew = `${String(court.noiseCurfew).padStart(2, '0')}:00`
+  return hm(b.start) >= hm(`${court.lighting.autoOnHour}:00`) && hm(b.end) > hm(curfew) ? curfew : b.end
+}
+
+// ---------- 夜间限制效果（社区端） ----------
+export interface NightEffectRow {
+  teamKey: string
+  teamName: string
+  level: NightRestrictionLevel
+  /** 限制生效日（第 2 次违规日期） */
+  restrictedAt: string
+  daysActive: number
+  /** 生效前 30 天 */
+  beforeVerified: number
+  beforeTotal: number
+  /** 生效后（不含触发当日） */
+  afterVerified: number
+  afterTotal: number
+  afterUnverified: number
+  pending: number
+  /** 限制后最近一次关灯时间 */
+  lastLightOffAt?: string
+  trend: 'down' | 'flat' | 'up'
+}
+
+export function nightRestrictionEffect(records: NoiseRecord[], today = '2026-09-27'): { rows: NightEffectRow[]; beforeVerified: number; afterVerified: number; afterUnverified: number; pending: number } {
+  const keys = [...new Set(records.map(r => r.teamKey))]
+  const rows: NightEffectRow[] = []
+  for (const key of keys) {
+    const rs = records.filter(r => r.teamKey === key)
+      .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+    const vios = rs.filter(isNoiseViolation)
+    if (vios.length < 2) continue
+    // 当前限制等级生效日：level 2 取第 3 次违规日，level 1 取第 2 次违规日
+    const levelNow = teamRestriction(key, records, today).level
+    const restrictedAt = vios[Math.min(vios.length, levelNow >= 2 ? 3 : 2) - 1].date
+    const before = rs.filter(r => daysBetween(r.date, restrictedAt) > 0 && daysBetween(r.date, restrictedAt) <= 30)
+    const after = rs.filter(r => daysBetween(restrictedAt, r.date) > 0 && daysBetween(r.date, today) >= 0)
+    const afterV = after.filter(isNoiseViolation).length
+    const beforeV = before.filter(isNoiseViolation).length
+    rows.push({
+      teamKey: key,
+      teamName: vios[vios.length - 1].teamName,
+      level: teamRestriction(key, records, today).level,
+      restrictedAt,
+      daysActive: daysBetween(restrictedAt, today),
+      beforeVerified: beforeV,
+      beforeTotal: before.length,
+      afterVerified: afterV,
+      afterTotal: after.length,
+      afterUnverified: after.filter(r => r.outcome === 'unverified').length,
+      pending: after.filter(r => r.outcome === 'open').length,
+      lastLightOffAt: after.filter(r => r.lightOffAt).pop()?.lightOffAt,
+      trend: afterV < beforeV ? 'down' : afterV > beforeV ? 'up' : 'flat'
+    })
+  }
+  rows.sort((a, b) => a.restrictedAt.localeCompare(b.restrictedAt))
+  return {
+    rows,
+    beforeVerified: rows.reduce((s, r) => s + r.beforeVerified, 0),
+    afterVerified: rows.reduce((s, r) => s + r.afterVerified, 0),
+    afterUnverified: rows.reduce((s, r) => s + r.afterUnverified, 0),
+    pending: rows.reduce((s, r) => s + r.pending, 0)
+  }
 }
