@@ -1,4 +1,4 @@
-import type { Booking, Court, Incident, MergeRequest, Role } from '../types'
+import type { Booking, Court, Incident, MergeRequest, NightViolation, Role } from '../types'
 
 /** 演示用"当前时间"：晚间黄金时段，照明已开，多个场次并行，冲突丰富 */
 export const TODAY = '2026-09-27'
@@ -454,6 +454,55 @@ export const BOOKINGS: Booking[] = [
       { at: '15:20', text: '队长点击"结束使用并关灯"，按实际 50 分钟结算', tone: 'success' },
       { at: '15:22', text: '押金 50 元扣除照明 40 元，退回 10 元（1–3 工作日到账）', tone: 'success' }
     ]
+  },
+  {
+    id: 'B011',
+    code: '825017',
+    courtId: 'court-3',
+    halves: ['H4'],
+    scope: 'half',
+    date: TODAY,
+    start: '19:00',
+    end: '21:00',
+    actualStart: '19:03',
+    headcount: 5,
+    acceptMerge: true,
+    teamName: '夜猫子篮球队',
+    teamKey: 'team-nightowl',
+    captainId: 'u-tu',
+    captainName: '涂鹰',
+    captainPhone: '135****3321',
+    fixedTeam: false,
+    credit: 82,
+    status: 'ongoing',
+    payStatus: 'depositPaid',
+    checkInCode: '825017',
+    lockerNos: [20],
+    lighting: { enabled: true, onAt: '19:05', minutes: 0, fee: 0, deposit: 100 },
+    fees: [
+      { kind: 'lighting', label: '照明费（实时累计）', amount: 0, ruleId: 'R-LIGHT-1' }
+    ],
+    nightRestriction: {
+      level: 'elevatedDeposit',
+      depositHalf: 100,
+      reasons: [
+        '2026-09-20 22:08 河滨公园灯光球场：河滨公寓 2 号楼居民投诉超时打球噪声（实测 68dB），管理员现场提醒"22:00 静音截止，请立即关灯离场"，照明 22:12 关闭，已收社区安宁费 50 元。',
+        '2026-09-13 22:05 河滨公园灯光球场：河滨公寓 2 号楼居民投诉夜间噪声，社区工作人员现场劝导，照明 22:10 关闭（首次劝导）。'
+      ],
+      depositRule: '近 30 天累计 2 次夜间噪声违规，本次夜间预约照明押金上浮为半场 ¥100 / 全场 ¥200（普通 ¥50/¥100），违规罚款优先从押金抵扣。'
+    },
+    members: [
+      { id: 'm11-1', name: '涂鹰', phone: '135****3321', isCaptain: true, checkedIn: true, checkInAt: '19:03' },
+      { id: 'm11-2', name: '马奔', phone: '135****3322', isCaptain: false, checkedIn: true, checkInAt: '19:04' },
+      { id: 'm11-3', name: '高岩', phone: '135****3323', isCaptain: false, checkedIn: true, checkInAt: '19:06' },
+      { id: 'm11-4', name: '林峰', phone: '135****3324', isCaptain: false, checkedIn: true, checkInAt: '19:08' },
+      { id: 'm11-5', name: '顾远（拼场散客）', phone: '150****6677', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '09:40', text: '预约成功：系统提示该队近 30 天 2 次夜间噪声违规，本场押金上浮至 100 元（R-NOISE-2），队长已确认历史违规原因与押金规则', tone: 'warning' },
+      { at: '19:03', text: '队长涂鹰到场签到；平台结束时间 21:00、场地静音截止 22:00，已向全队 5 人公示（R-NOISE-3）', tone: 'info' },
+      { at: '19:05', text: '照明开启，押金 100 元（违规队加倍押金）', tone: 'info' }
+    ]
   }
 ]
 
@@ -585,5 +634,47 @@ export const MERGE_REQUESTS: MergeRequest[] = [
     status: 'rejected',
     unreasonable: true,
     time: '17:52'
+  }
+]
+
+/** 夜间噪声违规留痕（四要素：投诉时间/使用队伍/照明关闭时间/管理员现场提醒），含 30 天内历史记录 */
+export const NIGHT_VIOLATIONS: NightViolation[] = [
+  {
+    id: 'NV-002',
+    teamKey: 'team-nightowl',
+    complaintTime: '22:08',
+    bookingId: 'B-HIST-0920',
+    teamName: '夜猫子篮球队',
+    courtId: 'court-3',
+    courtName: '河滨公园灯光球场',
+    source: '河滨公寓 2 号楼 刘先生（137****5521）',
+    noiseDb: 68,
+    curfew: '22:00',
+    lightsOffAt: '22:12',
+    reminder: '22:00 已到静音截止时间，请立即停止拍球并关灯离场，下次再违规夜间押金将加倍',
+    reminderBy: 'admin',
+    secondIn24h: true,
+    fee: 50,
+    date: '2026-09-20',
+    incidentId: 'I-HIST-0920'
+  },
+  {
+    id: 'NV-001',
+    teamKey: 'team-nightowl',
+    complaintTime: '22:05',
+    bookingId: 'B-HIST-0913',
+    teamName: '夜猫子篮球队',
+    courtId: 'court-3',
+    courtName: '河滨公园灯光球场',
+    source: '河滨公寓 2 号楼 多位居民',
+    noiseDb: 63,
+    curfew: '22:00',
+    lightsOffAt: '22:10',
+    reminder: '已过静音截止时间，请降低音量并尽快结束，24 小时内再次核实将收取社区安宁费',
+    reminderBy: 'worker',
+    secondIn24h: false,
+    fee: 0,
+    date: '2026-09-13',
+    incidentId: 'I-HIST-0913'
   }
 ]

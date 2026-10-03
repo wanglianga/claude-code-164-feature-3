@@ -1,0 +1,10 @@
+services:
+  court-booking-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: court-booking-web:latest
+    container_name: court-booking-web
+    ports:
+      - "8080:80"
+    restart: unless-stopped

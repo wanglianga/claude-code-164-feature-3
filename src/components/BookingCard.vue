@@ -5,14 +5,12 @@ import {
 } from 'naive-ui'
 import type { Booking } from '../types'
 import {
-  STATUS_META, PAY_META, FEE_META, checkedInCount, feeSummary,
-  fmt, hm, isActive, money, timeState
+  STATUS_META, PAY_META, FEE_META, RESTRICTION_META, bookingRisk, checkedInCount,
+  effectiveNightEnd, feeSummary, fmt, hm, isActive, money, timeState
 } from '../lib/engine'
-import { courtById, lightLive, nowStr } from '../store'
+import { courtById, lightLive, nowStr, nightRestrictionForBooking, useState } from '../store'
 import RuleLink from './RuleLink.vue'
 import RiskTag from './RiskTag.vue'
-import { bookingRisk } from '../lib/engine'
-import { useState } from '../store'
 
 const props = defineProps<{
   booking: Booking
@@ -27,6 +25,9 @@ const ts = computed(() => timeState(props.booking, nowStr.value))
 const risk = computed(() => bookingRisk(props.booking, state.incidents, nowStr.value))
 const present = computed(() => checkedInCount(props.booking))
 const summary = computed(() => feeSummary(props.booking, court.value, nowStr.value, !!light.value?.frozen))
+const restriction = computed(() => nightRestrictionForBooking(props.booking))
+const isNight = computed(() => hm(props.booking.start) >= court.value.lighting.autoOnHour * 60)
+const nightEnd = computed(() => effectiveNightEnd(props.booking, court.value, restriction.value))
 
 const remainText = computed(() => {
   if (props.booking.status === 'booked') {
@@ -82,6 +83,15 @@ const progress = computed(() => {
         type="line" :percentage="progress" :show-indicator="false"
         :status="remainType === 'error' ? 'error' : remainType === 'warning' ? 'warning' : 'success'"
         :height="6" />
+    </div>
+
+    <!-- 夜间场次：结束时间 / 静音截止对队长与每名队员公示（R-NOISE-3） -->
+    <div v-if="isNight" class="night-bar" :class="{ limited: restriction && restriction.level !== 'none' && restriction.level !== 'watch' }">
+      🌙 队员须知：平台结束时间 <b>{{ nightEnd }}</b> · 场地静音截止 {{ court.noiseCurfew }}:00，到点照明自动关闭；
+      结束时间以平台为准，队长口头延长无效 <RuleLink id="R-NOISE-3" />
+      <div v-if="restriction && restriction.level !== 'none'" class="nb-rest">
+        本队夜间限制：{{ RESTRICTION_META[restriction.level].label }}<template v-if="restriction.latestEnd"> · 最晚结束 {{ restriction.latestEnd }}</template>
+      </div>
     </div>
 
     <NGrid :cols="3" :x-gap="8" class="bc-stats">
@@ -185,6 +195,9 @@ const progress = computed(() => {
 .bc-row { display:flex; align-items:center; gap:6px; font-size:13px; margin:4px 0; color:#333; }
 .bc-label { color:#999; font-size:12px; min-width:34px; }
 .bc-live { margin:8px 0; }
+.night-bar { background:#eef4ff; border:1px solid #d6e4ff; border-radius:8px; padding:6px 9px; font-size:11.5px; color:#33507a; line-height:1.7; margin:6px 0; }
+.night-bar.limited { background:#fff7e6; border-color:#ffe7ba; color:#7a4d00; }
+.nb-rest { font-weight:600; margin-top:2px; }
 .bc-remain { font-size:22px; font-weight:800; margin-bottom:4px; }
 .r-success { color:#18a058; }
 .r-warning { color:#f0a020; }

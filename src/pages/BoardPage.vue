@@ -4,9 +4,9 @@ import { NButton, NTag, NEmpty, NAlert, NGrid, NGridItem } from 'naive-ui'
 import { useState, nowStr, releaseBooking, endUsage } from '../store'
 import {
   SURFACE_META, HOOP_META, bookingsOfHalf, checkedInCount, courtRisk,
-  fmt, halfSealed, isActive, timeState
+  fmt, halfSealed, hm, isActive, timeState
 } from '../lib/engine'
-import type { Booking, Court } from '../types'
+import type { Booking, Court, NightRestrictionLevel } from '../types'
 import RiskTag from '../components/RiskTag.vue'
 import RuleLink from '../components/RuleLink.vue'
 import { openIncidents } from '../lib/ui'
@@ -45,6 +45,15 @@ function remainBig(b: Booking) {
 
 function release(b: Booking) { releaseBooking(b.id) }
 function forceEnd(b: Booking) { endUsage(b.id, true) }
+
+const NIGHT_LEVEL_TEXT: Record<NightRestrictionLevel, string> = {
+  none: '无夜间限制',
+  watch: '观察提醒',
+  elevatedDeposit: '加倍押金',
+  timeLimited: '加倍押金+限时段',
+  suspended: '暂停夜间预约'
+}
+function nightLevelText(l: NightRestrictionLevel) { return NIGHT_LEVEL_TEXT[l] }
 </script>
 
 <template>
@@ -99,6 +108,14 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
             {{ currentOf(c, h)!.start }}–{{ currentOf(c, h)!.end }} ·
             到场 {{ checkedInCount(currentOf(c, h)!) }}/{{ currentOf(c, h)!.members.length }} ·
             签到码 {{ currentOf(c, h)!.checkInCode }}
+          </div>
+          <div v-if="hm(currentOf(c, h)!.start) >= 18 * 60" class="hr-night"
+            :class="{ limited: ['elevatedDeposit', 'timeLimited', 'suspended'].includes(currentOf(c, h)!.nightRestriction?.level ?? '') }">
+            🌙 夜间场次：{{ currentOf(c, h)!.end }} 结束 / {{ c.noiseCurfew }}:00 静音截止，到点强制关灯，队员均可查看
+            <template v-if="currentOf(c, h)!.nightRestriction && currentOf(c, h)!.nightRestriction!.level !== 'none'">
+              · <b>{{ nightLevelText(currentOf(c, h)!.nightRestriction!.level) }}</b>
+            </template>
+            <RuleLink id="R-NOISE-3" />
           </div>
           <div v-if="timeState(currentOf(c, h)!, nowStr).releasable" class="hr-release">
             ⏰ 开场超 20 分钟未签到 → 可释放给候补散客
@@ -166,6 +183,8 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
 .r-warn { color:#f0a020; }
 .r-error { color:#d03050; }
 .hr-meta { font-size:12px; color:#888; margin-top:3px; }
+.hr-night { font-size:11.5px; color:#33507a; background:#eef4ff; border-radius:6px; padding:3px 6px; margin-top:4px; line-height:1.6; }
+.hr-night.limited { background:#fff7e6; color:#ad6800; }
 .hr-off { font-weight:700; color:#d03050; font-size:14px; }
 .hr-rule { font-size:12px; color:#999; margin-top:2px; }
 .hr-release { background:#fff7e6; border-radius:6px; padding:4px 6px; font-size:12px; color:#ad6800; margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; }

@@ -1,6 +1,7 @@
 import type {
   Booking, Court, FeeItem, Incident, IncidentType, IncidentStatus, BookingStatus,
-  MergeRequest, PayStatus, SurfaceStatus, HoopStatus
+  MergeRequest, PayStatus, SurfaceStatus, HoopStatus,
+  NightRestriction, NightRestrictionLevel, NightViolation
 } from '../types'
 
 // ---------- 时间工具 ----------
@@ -98,7 +99,10 @@ export interface LightQuote {
 
 export function lightQuote(b: Booking, court: Court | undefined, nowHm: string, frozen = false): LightQuote | null {
   if (!b.lighting.enabled || !court || !b.lighting.onAt) return null
-  const endOf = b.lighting.offAt ?? (isActive(b, nowHm) ? nowHm : (b.actualEnd ?? b.end))
+  const curfewMin = court.noiseCurfew * 60
+  const rawEnd = b.lighting.offAt ?? (isActive(b, nowHm) ? nowHm : (b.actualEnd ?? b.end))
+  // 静音截止时间照明自动关闭、停止计费（R-NOISE-3），队长口头延时不改变平台结束时间
+  const endOf = hm(rawEnd) > curfewMin ? `${court.noiseCurfew}:00` : rawEnd
   const minutes = Math.max(0, hm(endOf) - hm(b.lighting.onAt))
   const halfFactor = b.scope === 'full' ? 2 : 1
   const gross = minutes * court.lighting.pricePerMinute * halfFactor
@@ -360,4 +364,191 @@ export function rejectMergeCheck(b: Booking, req: MergeRequest): { unreasonable:
   }
   if (total >= 6) return { unreasonable: true, hint: '拼入后达到半场合理人数（≥6 人），无理由拒绝将收 20 元资源占用费并扣信用 5 分（R-MERGE-1）' }
   return { unreasonable: false, hint: '当前人数不足，建议同意拼场以提高场地利用率' }
+}
+
+// ============ 夜间噪声限制（R-NOISE-2 / R-NOISE-3） ============
+
+export const NIGHT_BASE_DEPOSIT_HALF = 50
+export const NIGHT_ELEVATED_DEPOSIT_HALF = 100
+/** 限制统计窗口（天）与限制有效期（天） */
+export const NIGHT_WINDOW_DAYS = 30
+
+export function teamKeyOf(b: Booking): string {
+  return b.teamKey ?? b.teamName
+}
+
+export function curfewLabel(court: Court): string {
+  return `${String(court.noiseCurfew).padStart(2, '0')}:00`
+}
+
+/**
+ * 夜间场次的"平台结束时间"：预约结束、场地静音截止、队伍被限制的最晚结束三者取最早。
+ * 队员/队长/看板统一以此为准，避免队长个人承诺与平台规则不一致（R-NOISE-3）。
+ */
+export function effectiveNightEnd(b: Booking, court: Court, restriction?: NightRestriction | null): string {
+  let end = hm(b.end)
+  end = Math.min(end, court.noiseCurfew * 60)
+  if (restriction?.latestEnd) end = Math.min(end, hm(restriction.latestEnd))
+  return hmLabel(end)
+}
+
+export interface ViolationStats {
+  teamKey: string
+  teamName: string
+  violations: NightViolation[]
+  count: number
+  /** 窗口内（30 天）次数，决定限制等级 */
+  countInWindow: number
+  lastAt: string
+}
+
+/** 聚合某球队的全部夜间噪声违规记录（按时间倒序） */
+export function teamViolationStats(
+  violations: NightViolation[],
+  teamKey: string,
+  today: string
+): ViolationStats | null {
+  const list = violations
+    .filter(v => v.teamKey === teamKey)
+    .sort((a, b2) => (a.date + a.complaintTime < b2.date + b2.complaintTime ? 1 : -1))
+  if (list.length === 0) return null
+  const cutoff = daysBefore(today, NIGHT_WINDOW_DAYS)
+  const inWindow = list.filter(v => v.date >= cutoff)
+  return {
+    teamKey,
+    teamName: list[0].teamName,
+    violations: list,
+    count: list.length,
+    countInWindow: inWindow.length,
+    lastAt: `${list[0].date} ${list[0].complaintTime}`
+  }
+}
+
+function daysBefore(date: string, days: number): string {
+  const d = new Date(date + 'T00:00:00')
+  d.setDate(d.getDate() - days)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/**
+ * 由窗口内违规次数推导夜间限制等级（R-NOISE-2）：
+ * 1 次=观察提醒；2 次=加倍押金；3 次=加倍押金 + 结束不晚于 21:00；≥4 次=暂停夜间预约 30 天。
+ */
+export function restrictionLevelFor(countInWindow: number): NightRestrictionLevel {
+  if (countInWindow >= 4) return 'suspended'
+  if (countInWindow === 3) return 'timeLimited'
+  if (countInWindow === 2) return 'elevatedDeposit'
+  if (countInWindow === 1) return 'watch'
+  return 'none'
+}
+
+export const RESTRICTION_META: Record<NightRestrictionLevel, { label: string; type: 'success' | 'default' | 'warning' | 'error' | 'info' }> = {
+  none: { label: '无夜间限制', type: 'success' },
+  watch: { label: '观察提醒（1 次违规）', type: 'info' },
+  elevatedDeposit: { label: '加倍押金（2 次违规）', type: 'warning' },
+  timeLimited: { label: '加倍押金 + 限时段（3 次）', type: 'error' },
+  suspended: { label: '暂停夜间预约 30 天', type: 'error' }
+}
+
+/** 根据违规统计构造当前生效的夜间限制；窗口内无违规或仅 0 次返回 null */
+export function buildRestriction(stats: ViolationStats | null, court: Court | undefined, today: string): NightRestriction | null {
+  if (!stats || stats.countInWindow === 0) return null
+  const level = restrictionLevelFor(stats.countInWindow)
+  // 限制自最近一次被核实违规之日起生效
+  const since = stats.violations.find(v => v.date >= daysBefore(today, NIGHT_WINDOW_DAYS))?.date ?? today
+  const reasons = stats.violations.slice(0, 3).map(v =>
+    `${v.date} ${v.complaintTime} ${v.courtName}：${v.source} 投诉夜间噪声${v.noiseDb ? `（实测 ${v.noiseDb}dB）` : ''}，${v.reminderBy === 'admin' ? '管理员' : '社区工作人员'}现场提醒"${v.reminder}"，照明 ${v.lightsOffAt} 关闭${v.secondIn24h ? `，已收社区安宁费 ${v.fee} 元` : '（首次劝导）'}。`)
+  if (level === 'watch') {
+    return {
+      teamKey: stats.teamKey, teamName: stats.teamName, level, since,
+      reasons, violationCount: stats.count, lastAt: stats.lastAt,
+      depositHalf: NIGHT_BASE_DEPOSIT_HALF,
+      depositRule: `近 30 天有 ${stats.countInWindow} 次夜间噪声核实记录，本次仍按普通押金半场 ¥${NIGHT_BASE_DEPOSIT_HALF} / 全场 ¥${NIGHT_BASE_DEPOSIT_HALF * 2}；若再违规 1 次，押金将上浮至半场 ¥${NIGHT_ELEVATED_DEPOSIT_HALF}。`
+    }
+  }
+  if (level === 'elevatedDeposit') {
+    return {
+      teamKey: stats.teamKey, teamName: stats.teamName, level, since,
+      reasons, violationCount: stats.count, lastAt: stats.lastAt,
+      depositHalf: NIGHT_ELEVATED_DEPOSIT_HALF,
+      depositRule: `近 30 天累计 ${stats.countInWindow} 次夜间噪声违规，本次夜间预约照明押金上浮为半场 ¥${NIGHT_ELEVATED_DEPOSIT_HALF} / 全场 ¥${NIGHT_ELEVATED_DEPOSIT_HALF * 2}（普通 ¥${NIGHT_BASE_DEPOSIT_HALF}/¥${NIGHT_BASE_DEPOSIT_HALF * 2}），违规罚款优先从押金抵扣。`
+    }
+  }
+  if (level === 'timeLimited') {
+    const courtCurfew = court ? court.noiseCurfew : 22
+    const latestEndMin = Math.min(21, courtCurfew - 0) // 不晚于 21:00；更早静音场地从其规定
+    const latestEnd = hmLabel(latestEndMin * 60)
+    return {
+      teamKey: stats.teamKey, teamName: stats.teamName, level, since,
+      reasons, violationCount: stats.count, lastAt: stats.lastAt,
+      depositHalf: NIGHT_ELEVATED_DEPOSIT_HALF, latestEnd,
+      depositRule: `近 30 天累计 ${stats.countInWindow} 次违规：夜间预约结束时间不得晚于 ${latestEnd}，且照明押金上浮为半场 ¥${NIGHT_ELEVATED_DEPOSIT_HALF} / 全场 ¥${NIGHT_ELEVATED_DEPOSIT_HALF * 2}。`
+    }
+  }
+  // suspended
+  return {
+    teamKey: stats.teamKey, teamName: stats.teamName, level, since,
+    reasons, violationCount: stats.count, lastAt: stats.lastAt,
+    depositHalf: NIGHT_ELEVATED_DEPOSIT_HALF,
+    depositRule: `近 30 天累计 ${stats.countInWindow} 次违规，已暂停夜间预约资格 30 天；期间无法提交 18:00 后场次，可参加白天场次或参加社区文明运动宣讲后申请恢复。`
+  }
+}
+
+/** 夜间预约押金（半场） */
+export function nightDepositFor(restriction: NightRestriction | null | undefined): number {
+  return restriction && restriction.level !== 'watch' && restriction.level !== 'none'
+    ? restriction.depositHalf
+    : NIGHT_BASE_DEPOSIT_HALF
+}
+
+/** 限制生效前后投诉量对比（社区端：查看限制是否降低投诉） */
+export interface RestrictionEffect {
+  teamName: string
+  level: NightRestrictionLevel
+  since: string
+  /** 限制生效前 14 天投诉数 */
+  before: number
+  /** 生效后到今天的投诉数 */
+  after: number
+  reduced: boolean
+  /** 覆盖天数（生效后） */
+  daysAfter: number
+}
+
+export function restrictionEffects(
+  violations: NightViolation[],
+  restrictions: NightRestriction[],
+  today: string
+): RestrictionEffect[] {
+  return restrictions.map(r => {
+    const all = violations.filter(v => v.teamKey === r.teamKey)
+    const beforeCutoff = daysBefore(r.since, 14)
+    // 生效前 14 天（不含生效当日）；生效后新增=严格晚于生效当日（触发限制的那次违规不计入"新增"）
+    const before = all.filter(v => v.date >= beforeCutoff && v.date < r.since).length
+    const after = all.filter(v => v.date > r.since).length
+    const daysAfter = Math.max(0, daysBetween(r.since, today))
+    return {
+      teamName: r.teamName,
+      level: r.level,
+      since: r.since,
+      before,
+      after,
+      reduced: after < before,
+      daysAfter
+    }
+  })
+}
+
+function daysBetween(a: string, b: string): number {
+  const da = new Date(a + 'T00:00:00').getTime()
+  const db = new Date(b + 'T00:00:00').getTime()
+  return Math.round((db - da) / 86400000)
+}
+
+/** 全社区投诉趋势：按日期统计（用于社区端看板） */
+export function complaintsByDay(violations: NightViolation[]): { date: string; count: number }[] {
+  const m = new Map<string, number>()
+  for (const v of violations) m.set(v.date, (m.get(v.date) ?? 0) + 1)
+  return [...m.entries()].sort((a, b2) => a[0].localeCompare(b2[0])).map(([date, count]) => ({ date, count }))
 }

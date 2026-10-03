@@ -209,6 +209,12 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
           </NTag>
         </div>
         <div class="mc-row">📍 {{ courtName(b.courtId) }} · {{ b.scope === 'full' ? '全场' : '半场' }} {{ b.halves.join('+') }} · {{ b.start }}–{{ b.end }}</div>
+        <div class="mc-row" v-if="hm(b.start) >= 18 * 60" style="color:#33507a">
+          🌙 夜间场次：平台结束 <b>{{ b.end }}</b>，静音截止 {{ state.courts.find(c => c.id === b.courtId)?.noiseCurfew }}:00，到点自动关灯（队员可见，队长不能私自延长）<RuleLink id="R-NOISE-3" />
+        </div>
+        <div class="mc-row" v-if="b.nightRestriction && b.nightRestriction.level !== 'none' && b.nightRestriction.level !== 'watch'" style="color:#ad6800">
+          ⚠️ 该队有夜间噪声违规记录，本场押金已上浮、结束时间受限 <RuleLink id="R-NOISE-2" />
+        </div>
         <div class="mc-row">
           👥 已报名 {{ b.members.length }}/{{ b.scope === 'full' ? 14 : 8 }} 人 ·
           已签到 {{ checkedInCount(b) }} 人

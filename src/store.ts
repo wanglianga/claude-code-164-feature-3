@@ -1,10 +1,14 @@
 import { computed, reactive, ref } from 'vue'
 import type {
   Booking, Court, FeeItem, Incident, IncidentAction, IncidentStatus,
-  IncidentType, Member, MergeRequest, RoleId, Scope, TimelineEvent
+  IncidentType, Member, MergeRequest, NightRestriction, NightViolation, RoleId, Scope, TimelineEvent
 } from './types'
-import { BOOKINGS, COURTS, INCIDENTS, MERGE_REQUESTS, NOW_HM, ROLES, TODAY } from './data/mock'
-import { checkedInCount, feeSummary, hm, lightQuote } from './lib/engine'
+import { BOOKINGS, COURTS, INCIDENTS, MERGE_REQUESTS, NIGHT_VIOLATIONS, NOW_HM, ROLES, TODAY } from './data/mock'
+import {
+  buildRestriction, checkedInCount, effectiveNightEnd, feeSummary, hm, lightQuote,
+  nightDepositFor, complaintsByDay, restrictionEffects, teamKeyOf, teamViolationStats,
+  RESTRICTION_META
+} from './lib/engine'
 
 // ---------- 模拟时钟 ----------
 const nowStr = ref(NOW_HM)
@@ -40,6 +44,8 @@ interface State {
   bookings: Booking[]
   incidents: Incident[]
   mergeRequests: MergeRequest[]
+  /** 夜间噪声违规留痕（四要素，跨日历史，用于累计限制与效果回看） */
+  nightViolations: NightViolation[]
   /** 站内消息（模拟短信/通知） */
   notices: { id: number; to: RoleId | 'all'; text: string; at: string }[]
 }
@@ -50,6 +56,7 @@ const state = reactive<State>({
   bookings: structuredClone(BOOKINGS),
   incidents: structuredClone(INCIDENTS),
   mergeRequests: structuredClone(MERGE_REQUESTS),
+  nightViolations: structuredClone(NIGHT_VIOLATIONS),
   notices: []
 })
 
@@ -66,7 +73,7 @@ export function setRole(r: RoleId) {
   state.role = r
 }
 
-const idCounters: Record<string, number> = { B: 10, 'MR-': 3, I: 6 }
+const idCounters: Record<string, number> = { B: 12, 'MR-': 3, I: 6, NV: 2 }
 function nextId(prefix: string, pad = 3) {
   const n = (idCounters[prefix] = (idCounters[prefix] ?? 0) + 1)
   return `${prefix}${String(n).padStart(pad, '0')}`
@@ -92,6 +99,69 @@ export interface BookingForm {
   captainPhone: string
 }
 
+/** 由队伍名称解析稳定球队标识：优先命中历史违规/已有预约上的 teamKey */
+function resolveTeamKey(teamName: string): string {
+  const t = teamName.trim()
+  const byViolation = state.nightViolations.find(v => v.teamKey === t || v.teamName === t)
+  if (byViolation) return byViolation.teamKey
+  const byBooking = state.bookings.find(b => b.teamName === t && b.teamKey)
+  return byBooking?.teamKey ?? t
+}
+
+/** 某球队当前生效的夜间限制（30 天窗口实时计算） */
+export function nightRestrictionForTeam(teamNameOrKey: string, courtId: string): NightRestriction | null {
+  const court = state.courts.find(c => c.id === courtId)
+  const key = state.nightViolations.some(v => v.teamKey === teamNameOrKey)
+    ? teamNameOrKey
+    : resolveTeamKey(teamNameOrKey)
+  const stats = teamViolationStats(state.nightViolations, key, TODAY)
+  return buildRestriction(stats, court, TODAY)
+}
+
+/** 某预约所属球队当前生效的夜间限制（优先用预约时快照，其次实时计算） */
+export function nightRestrictionForBooking(b: Booking): NightRestriction | null {
+  const court = state.courts.find(c => c.id === b.courtId)
+  const stats = teamViolationStats(state.nightViolations, teamKeyOf(b), TODAY)
+  return buildRestriction(stats, court, TODAY)
+}
+
+export interface NightPreview {
+  restriction: NightRestriction | null
+  /** 半场押金（元） */
+  depositHalf: number
+  /** 本场实际应缴押金（全场 ×2） */
+  deposit: number
+  /** 平台公示结束时间（预约结束 / 静音截止 / 限时段取最早，R-NOISE-3） */
+  effectiveEnd: string
+  curfew: string
+  /** 被暂停夜间预约 */
+  blocked: boolean
+  /** 预约结束是否被限制规则提前截断 */
+  capped: boolean
+}
+
+/** 预约前的夜间规则预览：历史违规原因、本次押金、结束时间 */
+export function previewNightBooking(input: {
+  teamName: string; courtId: string; scope: Scope; start: string; end: string
+}): NightPreview {
+  const court = state.courts.find(c => c.id === input.courtId)!
+  const restriction = nightRestrictionForTeam(input.teamName, input.courtId)
+  const depositHalf = nightDepositFor(restriction)
+  const isNight = hm(input.start) >= court.lighting.autoOnHour * 60
+  const blocked = !!restriction && restriction.level === 'suspended' && isNight
+  const probe: Booking = { ...({} as Booking), end: input.end }
+  const effectiveEnd = isNight ? effectiveNightEnd(probe, court, restriction) : input.end
+  return {
+    restriction,
+    depositHalf,
+    deposit: input.scope === 'full' ? depositHalf * 2 : depositHalf,
+    effectiveEnd,
+    curfew: `${String(court.noiseCurfew).padStart(2, '0')}:00`,
+    blocked,
+    capped: effectiveEnd !== input.end
+  }
+}
+
 export function createBooking(form: BookingForm): Booking {
   const id = nextId('B')
   const member: Member = {
@@ -101,6 +171,14 @@ export function createBooking(form: BookingForm): Booking {
     isCaptain: true,
     checkedIn: false
   }
+  const teamKey = resolveTeamKey(form.teamName || form.captainName || '我的队伍')
+  const court = state.courts.find(c => c.id === form.courtId)!
+  const preview = previewNightBooking({
+    teamName: form.teamName || form.captainName || '我的队伍',
+    courtId: form.courtId, scope: form.scope, start: form.start, end: form.end
+  })
+  // 限时段：结束时间不得晚于允许值；暂停夜间预约：拒绝创建
+  const finalEnd = preview.capped ? preview.effectiveEnd : form.end
   const b: Booking = {
     id,
     code: String(100000 + Math.floor(Math.random() * 899999)),
@@ -109,10 +187,11 @@ export function createBooking(form: BookingForm): Booking {
     scope: form.scope,
     date: TODAY,
     start: form.start,
-    end: form.end,
+    end: finalEnd,
     headcount: form.headcount,
     acceptMerge: form.acceptMerge,
     teamName: form.teamName || '我的队伍',
+    teamKey,
     captainId: 'u-me',
     captainName: form.captainName || '我',
     captainPhone: form.captainPhone || '未填写',
@@ -125,16 +204,34 @@ export function createBooking(form: BookingForm): Booking {
     credit: 100,
     timeline: []
   }
+  if (preview.restriction && preview.restriction.level !== 'none' && preview.restriction.level !== 'watch') {
+    b.nightRestriction = {
+      level: preview.restriction.level,
+      depositHalf: preview.restriction.depositHalf,
+      latestEnd: preview.restriction.latestEnd,
+      reasons: preview.restriction.reasons,
+      depositRule: preview.restriction.depositRule
+    }
+  }
   b.checkInCode = b.code
-  tl(b, `预约成功：${form.scope === 'full' ? '全场' : '半场'} ${form.halves.join('/')} ${form.start}–${form.end}，${form.headcount} 人${form.acceptMerge ? '，接受拼场（照明 8 折）' : '，不接受拼场'}`, 'success')
+  tl(b, `预约成功：${form.scope === 'full' ? '全场' : '半场'} ${form.halves.join('/')} ${form.start}–${finalEnd}，${form.headcount} 人${form.acceptMerge ? '，接受拼场（照明 8 折）' : '，不接受拼场'}`, 'success')
+  if (preview.capped) {
+    tl(b, `你所在球队处于夜间限时段，预约结束时间已按平台规则调整为 ${finalEnd}（不得更晚），该结束时间对全队公示（R-NOISE-2 / R-NOISE-3）`, 'warning')
+  }
   if (form.headcount < (form.scope === 'full' ? 8 : 4)) {
     tl(b, '人数低于建议下限，系统建议开放拼场以提高公共场地利用率（R-BOOK-1）', 'warning')
   }
   if (form.needLight) {
-    tl(b, '已预约夜间照明，开灯前需支付照明押金（半场 50 元 / 全场 100 元，R-LIGHT-2）', 'info')
+    tl(b, `已预约夜间照明，开灯前需支付照明押金（半场 ${preview.depositHalf} 元 / 全场 ${preview.depositHalf * 2} 元${preview.depositHalf > 50 ? '，违规队上浮标准' : ''}，R-LIGHT-2 / R-NOISE-2）`, 'info')
+  }
+  if (hm(form.start) >= court.lighting.autoOnHour * 60) {
+    tl(b, `夜间场次：平台结束时间 ${finalEnd}，场地静音截止 ${preview.curfew}，到点照明自动关闭；队长不得以个人承诺延长，队员均可查看结束时间（R-NOISE-3）`, 'info')
+  }
+  if (preview.restriction && (preview.restriction.level === 'elevatedDeposit' || preview.restriction.level === 'timeLimited' || preview.restriction.level === 'suspended')) {
+    tl(b, `预约前已向队长公示历史噪声违规与押金规则：${preview.restriction.depositRule}`, 'warning')
   }
   state.bookings.push(b)
-  notify(state.role, `预约成功，签到码 ${b.code}，请在开场后 15 分钟内签到`)
+  notify(state.role, `预约成功，签到码 ${b.code}，请在开场后 15 分钟内签到；夜间结束时间 ${finalEnd}`)
   return b
 }
 
@@ -245,9 +342,12 @@ export function respondMerge(reqId: string, accept: boolean, reason = '') {
 export function payDeposit(bookingId: string) {
   const b = state.bookings.find(x => x.id === bookingId)!
   const court = state.courts.find(c => c.id === b.courtId)!
-  b.lighting.deposit = b.scope === 'full' ? 100 : court.lighting.deposit
+  const half = b.nightRestriction && b.nightRestriction.level !== 'watch'
+    ? b.nightRestriction.depositHalf
+    : court.lighting.deposit
+  b.lighting.deposit = b.scope === 'full' ? half * 2 : half
   b.payStatus = 'depositPaid'
-  tl(b, `照明押金 ${b.lighting.deposit} 元已支付`, 'success')
+  tl(b, `照明押金 ${b.lighting.deposit} 元已支付${half > court.lighting.deposit ? '（夜间违规队上浮押金，R-NOISE-2）' : ''}`, 'success')
 }
 
 export function turnOnLight(bookingId: string) {
@@ -384,21 +484,105 @@ export function resolveLightFault(id: string, choice: 'wait' | 'reschedule' | 'r
   }
 }
 
-/** 噪声投诉处置（R-NOISE-1） */
-export function resolveNoise(id: string, secondVerified: boolean) {
+/** 噪声投诉处置入参（四要素 + 是否 24h 内第 2 次核实） */
+export interface NoiseResolveInput {
+  secondVerified: boolean
+  /** 投诉/登记时间 HH:mm（默认工单时间） */
+  complaintTime?: string
+  /** 照明关闭时间 HH:mm（现场关灯留痕） */
+  lightsOffAt: string
+  /** 管理员/社区工作人员现场提醒内容 */
+  reminder: string
+  /** 实测分贝（选填） */
+  noiseDb?: number
+}
+
+/** 噪声投诉处置（R-NOISE-1 / R-NOISE-2 / R-NOISE-3） */
+export function resolveNoise(id: string, input: NoiseResolveInput) {
   const inc = state.incidents.find(x => x.id === id)!
-  const b = state.bookings.find(x => x.id === inc.bookingIds[0])!
-  if (!secondVerified) {
+  const b = inc.bookingIds.map(bid => state.bookings.find(x => x.id === bid)).find(Boolean)
+  const court = state.courts.find(c => c.id === inc.courtId)!
+  const complaintTime = input.complaintTime || inc.time
+  inc.nightRecord = {
+    complaintTime,
+    lightsOffAt: input.lightsOffAt,
+    reminder: input.reminder,
+    reminderBy: state.role === 'admin' ? 'admin' : 'worker',
+    noiseDb: input.noiseDb
+  }
+  const reminderBy: RoleId = inc.nightRecord.reminderBy
+
+  // 二次核实处罚立即强制关灯（按当前时间）；首次劝导若登记关灯时间已到则按该时间关灯（R-NOISE-3）。
+  // 首次劝导登记的是未来时间时不提前冻结照明费，计费到静音截止自动停止。
+  const forcedNow = input.secondVerified && hm(input.lightsOffAt) > hm(nowStr.value)
+  const effectiveOffAt = forcedNow ? nowStr.value : input.lightsOffAt
+  const forceOff = input.secondVerified || hm(input.lightsOffAt) <= hm(nowStr.value)
+  if (b && b.lighting.enabled && !b.lighting.offAt && forceOff) {
+    b.lighting.offAt = effectiveOffAt
+    tl(b, `应噪声现场处置，照明于 ${effectiveOffAt} 关闭、计费停止（R-NOISE-3）`, 'warning')
+  }
+
+  if (b) {
+    // 四要素合并为一条违规留痕
+    const nv: NightViolation = {
+      id: nextId('NV-'),
+      teamKey: teamKeyOf(b),
+      complaintTime,
+      bookingId: b.id,
+      teamName: b.teamName,
+      courtId: inc.courtId,
+      courtName: court.name,
+      source: inc.source,
+      noiseDb: input.noiseDb,
+      curfew: `${String(court.noiseCurfew).padStart(2, '0')}:00`,
+      lightsOffAt: input.lightsOffAt,
+      reminder: input.reminder,
+      reminderBy,
+      secondIn24h: input.secondVerified,
+      fee: input.secondVerified ? 50 : 0,
+      date: TODAY,
+      incidentId: inc.id
+    }
+    state.nightViolations.unshift(nv)
+  }
+
+  if (!input.secondVerified) {
     inc.status = 'resolved'
-    inc.penalty = '首次劝导，不予处罚'
-    act(inc, 'worker', '现场劝导完成，音量已降至标准内；告知队长 24 小时内再次核实投诉将收取 50 元社区安宁费（R-NOISE-1）')
+    inc.penalty = '首次劝导，不予处罚；已登记投诉时间/队伍/关灯时间/现场提醒四要素（R-NOISE-2）'
+    act(inc, reminderBy, `现场劝导完成（投诉时间 ${complaintTime}，队伍 ${b?.teamName ?? '—'}，照明 ${input.lightsOffAt} 关闭）：${input.reminder}；投诉时间、使用队伍、照明关闭时间、现场提醒已一并记录留痕（R-NOISE-1 / R-NOISE-2）`)
   } else {
     inc.status = 'penalized'
-    b.fees.push({ kind: 'complaint', label: '24 小时内第 2 次噪声投诉核实 · 社区安宁费', amount: 50, ruleId: 'R-NOISE-1', note: '第 3 次将暂停预约资格 30 天' })
-    b.credit = Math.max(0, b.credit - 5)
-    inc.penalty = '收取社区安宁费 50 元、信用 -5；第 3 次暂停预约资格 30 天'
-    act(inc, 'worker', '第 2 次现场核实噪声超标：收取社区安宁费 50 元，书面告知投诉居民处理结果并留痕（R-NOISE-1 / R-FAIR-3）')
-    notify('captain', '噪声投诉已二次核实：收取 50 元社区安宁费，请注意控制音量')
+    if (b) {
+      b.fees.push({ kind: 'complaint', label: '24 小时内第 2 次噪声投诉核实 · 社区安宁费', amount: 50, ruleId: 'R-NOISE-1', note: '第 3 次将限制夜间时段并上浮押金（R-NOISE-2）' })
+      b.credit = Math.max(0, b.credit - 5)
+    }
+    inc.penalty = '收取社区安宁费 50 元、信用 -5；累计违规将触发加倍押金/限时段（R-NOISE-2）'
+    act(inc, reminderBy, `第 2 次现场核实噪声超标${input.noiseDb ? `（实测 ${input.noiseDb}dB）` : ''}：投诉时间 ${complaintTime}、队伍 ${b?.teamName ?? '—'}、照明 ${input.lightsOffAt} 关闭；现场提醒"${input.reminder}"。收取社区安宁费 50 元，书面答复投诉居民并留痕（R-NOISE-1 / R-FAIR-3 / R-NOISE-2）`)
+    if (b) notify('captain', '噪声投诉已二次核实：收取 50 元社区安宁费，请注意控制音量')
+  }
+
+  // 累计违规 → 更新该队后续夜间预约限制
+  if (b) {
+    const restriction = nightRestrictionForBooking(b)
+    if (restriction && restriction.level !== 'none' && restriction.level !== 'watch') {
+      b.nightRestriction = {
+        level: restriction.level,
+        depositHalf: restriction.depositHalf,
+        latestEnd: restriction.latestEnd,
+        reasons: restriction.reasons,
+        depositRule: restriction.depositRule
+      }
+      if (restriction.level === 'timeLimited') {
+        tl(b, `累计 ${restriction.violationCount} 次夜间噪声违规：后续夜间预约结束不得晚于 ${restriction.latestEnd}、押金上浮至半场 ${restriction.depositHalf} 元（R-NOISE-2）`, 'error')
+        notify('captain', `你的球队已被夜间限时段（结束≤${restriction.latestEnd}）并上浮押金`)
+      } else if (restriction.level === 'suspended') {
+        tl(b, `累计 ${restriction.violationCount} 次违规：暂停夜间预约资格 30 天（R-NOISE-2）`, 'error')
+      } else {
+        tl(b, `累计 ${restriction.violationCount} 次夜间噪声违规：后续夜间预约押金上浮至半场 ${restriction.depositHalf} 元（R-NOISE-2）`, 'error')
+      }
+    } else if (restriction?.level === 'watch') {
+      tl(b, '已登记 1 次夜间噪声违规（观察期）：再次违规将上浮夜间押金（R-NOISE-2）', 'warning')
+    }
   }
 }
 
@@ -503,4 +687,29 @@ export function lightLive(b: Booking) {
   const faultIncident = state.incidents.some(i => i.type === 'lightFault' && i.bookingIds.includes(b.id) && (i.status === 'open' || i.status === 'mediating'))
   return lightQuote(b, court, nowStr.value, faultIncident)
 }
-export { feeSummary }
+
+/** 当前所有生效中的球队夜间限制（社区端/管理员查看） */
+export function activeNightRestrictions(): NightRestriction[] {
+  const keys = [...new Set(state.nightViolations.map(v => v.teamKey))]
+  const out: NightRestriction[] = []
+  for (const key of keys) {
+    const stats = teamViolationStats(state.nightViolations, key, TODAY)
+    const court = state.courts.find(c => c.id === stats?.violations[0]?.courtId)
+    const r = buildRestriction(stats, court, TODAY)
+    // 仅统计真正的限制（加倍押金 / 限时段 / 暂停）；观察提醒不计入"限制效果"
+    if (r && r.level !== 'none' && r.level !== 'watch') out.push(r)
+  }
+  return out
+}
+
+/** 限制生效前后投诉量对比（社区端：限制是否降低投诉） */
+export function nightRestrictionEffectList() {
+  return restrictionEffects(state.nightViolations, activeNightRestrictions(), TODAY)
+}
+
+/** 全社区按日夜间投诉趋势 */
+export function nightComplaintsByDay() {
+  return complaintsByDay(state.nightViolations)
+}
+
+export { feeSummary, RESTRICTION_META }

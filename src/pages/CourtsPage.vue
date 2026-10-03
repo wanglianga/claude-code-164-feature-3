@@ -5,9 +5,9 @@ import {
   NRadio, NRadioGroup, NSelect, NTag, NGrid, NGridItem, NAlert,
   useMessage
 } from 'naive-ui'
-import { useState, createBooking, reportIncident, nowStr } from '../store'
+import { useState, createBooking, reportIncident, nowStr, previewNightBooking } from '../store'
 import {
-  SURFACE_META, HOOP_META, courtRisk, bookingsOfHalf, halfSealed, isActive,
+  SURFACE_META, HOOP_META, RESTRICTION_META, courtRisk, bookingsOfHalf, halfSealed, isActive,
   slotOptions, money, hm, timeState
 } from '../lib/engine'
 import type { Booking, Court } from '../types'
@@ -73,15 +73,26 @@ const headHint = computed(() => {
   return { type: 'success' as const, text: '人数符合建议区间' }
 })
 
+const nightPreview = computed(() => {
+  const c = selectedCourt.value
+  if (!c || !form.value.slot) return null
+  const slot = chosenSlot.value!
+  const teamName = form.value.teamName.trim() || form.value.captainName.trim() || '我的队伍'
+  return previewNightBooking({ teamName, courtId: c.id, scope: form.value.scope, start: slot.start, end: slot.end })
+})
+
 const feePreview = computed(() => {
   const c = selectedCourt.value
   if (!c || !form.value.slot) return null
   const slot = chosenSlot.value!
+  const np = nightPreview.value
   if (!slot.night || !form.value.needLight) {
     return { deposit: 0, rate: 0, perMin: 0, note: '该时段为白天，无需照明；场地本身免费开放' }
   }
   const halfFactor = form.value.scope === 'full' ? 2 : 1
-  const deposit = form.value.scope === 'full' ? 100 : c.lighting.deposit
+  // 押金：受限制球队按上浮标准（R-NOISE-2）
+  const depositHalf = np ? np.depositHalf : c.lighting.deposit
+  const deposit = form.value.scope === 'full' ? depositHalf * 2 : depositHalf
   const perMin = c.lighting.pricePerMinute * halfFactor * (form.value.acceptMerge ? 0.8 : 1)
   const mins = (hm(slot.end) - hm(slot.start))
   return {
@@ -89,10 +100,11 @@ const feePreview = computed(() => {
     rate: perMin,
     perMin,
     max: perMin * mins,
+    elevated: depositHalf > c.lighting.deposit,
     fault: c.lighting.status === 'fault',
     note: c.lighting.status === 'fault'
       ? '该片场地照明当前故障，夜间场次暂无法开灯；提交预约后若到场仍未修复，可按 R-LIGHT-3 免费改约或全额退款'
-      : `夜间按实际开灯分钟计费，预估上限 ¥${money(perMin * mins)}（${form.value.acceptMerge ? '拼场 8 折，' : ''}结束按实际时长结算），押金 ¥${deposit}`
+      : `夜间按实际开灯分钟计费，预估上限 ¥${money(perMin * mins)}（${form.value.acceptMerge ? '拼场 8 折，' : ''}结束按实际时长结算），押金 ¥${deposit}${depositHalf > c.lighting.deposit ? '（违规队上浮，R-NOISE-2）' : ''}`
   }
 })
 
@@ -100,6 +112,10 @@ function submit() {
   const c = selectedCourt.value!
   const slot = chosenSlot.value!
   if (!slot) return message.warning('请选择时间段')
+  const np = nightPreview.value
+  if (np?.blocked) {
+    return message.warning('该球队近 30 天夜间噪声违规已达暂停标准，30 天内无法预约 18:00 后场次（R-NOISE-2）')
+  }
   let halves: string[]
   if (form.value.scope === 'full') {
     if (!slot.fullAvailable) return message.warning('该时段没有两个相邻空闲半场，无法约全场')
@@ -267,6 +283,10 @@ function occupancyBlocks(c: Court, h: string) {
             </NFormItem>
           </NGridItem>
         </NGrid>
+        <div class="demo-fill">
+          演示：夜间 18:00 后时段，填入有违规记录的队伍名可查看限制提示 →
+          <NButton text size="tiny" type="warning" @click="form.teamName = '夜猫子篮球队'">填入「夜猫子篮球队」（2 次违规·加倍押金）</NButton>
+        </div>
         <NAlert :type="headHint.type" style="margin:2px 0 8px">{{ headHint.text }}</NAlert>
 
         <NFormItem label="队长信息">
@@ -286,6 +306,38 @@ function occupancyBlocks(c: Court, h: string) {
             <b>需要夜间照明</b>（18:00 后场次，开灯前付押金，按实际使用分钟计费）<RuleLink id="R-LIGHT-2" />
           </NCheckbox>
         </div>
+
+        <!-- 夜间场次：结束时间对全员公示（R-NOISE-3） -->
+        <NAlert v-if="chosenSlot && chosenSlot.night" type="info" class="night-alert" :show-icon="false">
+          <div style="font-size:12px;line-height:1.7">
+            🌙 本场为夜间场次：<b>平台结束时间 {{ nightPreview?.effectiveEnd ?? chosenSlot.end }}</b>，场地静音截止 {{ nightPreview?.curfew }}，到点照明自动关闭、停止计费。
+            该结束时间<b>对队长和每名队员公开</b>，队长个人承诺不能延长 <RuleLink id="R-NOISE-3" />
+            <div v-if="nightPreview?.capped" style="color:#d03050;margin-top:2px">
+              所选结束时间晚于你球队的夜间限制时间，提交后将自动调整为 {{ nightPreview.effectiveEnd }}。
+            </div>
+          </div>
+        </NAlert>
+
+        <!-- 受限球队：预约前公示历史违规原因与本次押金规则（R-NOISE-2） -->
+        <NAlert v-if="nightPreview?.restriction && nightPreview.restriction.level !== 'none'"
+          :type="nightPreview.restriction.level === 'watch' ? 'info' : 'warning'" class="night-alert">
+          <div style="font-size:12px;line-height:1.7">
+            <div style="font-weight:700;margin-bottom:3px">
+          ⚠️ 球队「{{ form.teamName || form.captainName || '我的队伍' }}」夜间噪声档案
+          <NTag size="tiny" round :type="RESTRICTION_META[nightPreview.restriction.level].type" style="margin-left:4px">
+            {{ RESTRICTION_META[nightPreview.restriction.level].label }}
+          </NTag>
+          <RuleLink id="R-NOISE-2" />
+            </div>
+            <div v-if="nightPreview.restriction.level === 'suspended'" style="color:#d03050;font-weight:600">
+              已暂停夜间预约资格 30 天，无法提交 18:00 后场次；可预约白天场次或参加社区文明运动宣讲后恢复。
+            </div>
+            <template v-else>
+              <div v-for="(r, i) in nightPreview.restriction.reasons" :key="i" class="nv-reason">· {{ r }}</div>
+              <div class="nv-deposit">💰 {{ nightPreview.restriction.depositRule }}</div>
+            </template>
+          </div>
+        </NAlert>
 
         <NAlert v-if="feePreview" :type="feePreview.fault ? 'error' : 'info'" style="margin-top:8px">
           <div style="font-size:12px;line-height:1.7">
@@ -364,6 +416,10 @@ function occupancyBlocks(c: Court, h: string) {
 .half-chip.disabled .hc-state { color:#999; font-weight:400; }
 .court-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
 .opt-box { background:#f7f9fc; border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:12.5px; line-height:1.6; }
+.night-alert { margin-bottom:8px; }
+.nv-reason { color:#7a4d00; margin:2px 0; }
+.nv-deposit { margin-top:5px; font-weight:700; color:#ad6800; }
+.demo-fill { font-size:11px; color:#999; margin:-2px 0 8px; line-height:1.8; }
 .occ-row { display:flex; gap:8px; align-items:center; padding:6px 4px; border-bottom:1px solid #f3f3f3; font-size:12.5px; }
 .occ-time { color:#666; font-variant-numeric:tabular-nums; min-width:92px; }
 </style>

@@ -130,6 +130,8 @@ export interface Incident {
   desc: string
   source: string // 投诉人/上报人
   time: string   // HH:mm
+  /** 工单日期（历史工单用，默认今日 TODAY） */
+  date?: string
   status: IncidentStatus
   /** 处置记录（时间线） */
   actions: IncidentAction[]
@@ -137,12 +139,81 @@ export interface Incident {
   ruleApplied?: string[]
   /** 后续处罚 */
   penalty?: string
+  /** 夜间噪声四要素（噪声工单专用：投诉时间/关灯时间/现场提醒） */
+  nightRecord?: {
+    complaintTime: string
+    lightsOffAt: string
+    reminder: string
+    reminderBy: RoleId
+    noiseDb?: number
+  }
 }
 
 export interface IncidentAction {
   at: string
   by: RoleId
   text: string
+}
+
+/**
+ * 夜间噪声违规记录（居民连续投诉 22:00 后噪声的留痕）。
+ * 一次核实即一条；把"投诉时间 / 使用队伍 / 照明关闭时间 / 管理员现场提醒"
+ * 四要素固定记录在一起，作为后续夜间限制与押金升级的依据。
+ */
+export interface NightViolation {
+  id: string
+  /** 稳定球队标识（与 Booking.teamKey 一致，缺省为队名） */
+  teamKey: string
+  /** 投诉时间（居民来电/登记时间，HH:mm） */
+  complaintTime: string
+  /** 关联预约（场地使用队伍） */
+  bookingId: string
+  teamName: string
+  courtId: string
+  courtName: string
+  /** 投诉人/来源 */
+  source: string
+  /** 实测噪声（分贝，可空） */
+  noiseDb?: number
+  /** 静音截止时间（HH:mm，取自场地 noiseCurfew） */
+  curfew: string
+  /** 照明实际/要求关闭时间（HH:mm） */
+  lightsOffAt: string
+  /** 现场提醒/劝导文字 */
+  reminder: string
+  /** 现场提醒人（管理员/社区工作人员） */
+  reminderBy: RoleId
+  /** 是否 24h 内第 2 次核实（收费） */
+  secondIn24h: boolean
+  /** 已收社区安宁费（元） */
+  fee: number
+  /** 发生日期（演示用，用于限制生效前后的投诉对比） */
+  date: string
+  /** 关联工单 */
+  incidentId: string
+}
+
+/** 队伍夜间限制等级（多次噪声违规后递进） */
+export type NightRestrictionLevel = 'none' | 'watch' | 'elevatedDeposit' | 'timeLimited' | 'suspended'
+
+export interface NightRestriction {
+  teamKey: string
+  teamName: string
+  level: NightRestrictionLevel
+  /** 生效起始日期 */
+  since: string
+  /** 历史违规原因（面向队长公示） */
+  reasons: string[]
+  /** 本次夜间预约押金规则说明 */
+  depositRule: string
+  /** 押金倍数/金额（半场，全场 ×2） */
+  depositHalf: number
+  /** 允许预约的最晚结束时间（HH:mm），空表示不限制时段 */
+  latestEnd?: string
+  /** 累计违规次数 */
+  violationCount: number
+  /** 最近一次违规时间 */
+  lastAt: string
 }
 
 /** 拼场申请 */
@@ -190,6 +261,16 @@ export interface Booking {
   credit: number
   /** 管理员改约/限制原因 */
   adminNote?: string
+  /** 稳定的球队标识（用于跨预约聚合历史噪声违规）；缺省回退为队名 */
+  teamKey?: string
+  /** 预约时适用的夜间限制快照（高押金/限时段 + 历史违规原因），提交前向队长公示 */
+  nightRestriction?: {
+    level: NightRestrictionLevel
+    depositHalf: number
+    latestEnd?: string
+    reasons: string[]
+    depositRule: string
+  }
   /** 权益/核验时间线 */
   timeline: TimelineEvent[]
   /** 签到码 */

@@ -145,6 +145,9 @@ const fairness = computed(() => {
           <NTag size="tiny" :type="PAY_META[b.payStatus].type">{{ PAY_META[b.payStatus].label }}</NTag>
           <NTag size="tiny">信用 {{ b.credit }}</NTag>
           <NTag v-if="b.fixedTeam" size="tiny" type="info">固定球队</NTag>
+          <NTag v-if="b.nightRestriction && b.nightRestriction.level === 'elevatedDeposit'" size="tiny" type="warning">夜间加倍押金</NTag>
+          <NTag v-if="b.nightRestriction && b.nightRestriction.level === 'timeLimited'" size="tiny" type="error">夜间限时段≤{{ b.nightRestriction.latestEnd }}</NTag>
+          <NTag v-if="b.nightRestriction && b.nightRestriction.level === 'suspended'" size="tiny" type="error">暂停夜间预约</NTag>
         </div>
         <div v-if="isActive(b, nowStr)" class="ar-live">
           照明已用 {{ feeSummary(b, state.courts.find(c => c.id === b.courtId), nowStr).light?.minutes ?? 0 }} 分钟 ·
